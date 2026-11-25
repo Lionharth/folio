@@ -124,4 +124,58 @@ export async function queryRelays(
   return [...unique.values()];
 }
 
+export interface RelayQueryResult {
+  events: Event[];
+  ok: boolean;
+  reason: string | null;
+}
+
+export function queryRelay(
+  pool: Pool,
+  relay: string,
+  filter: SubscribeOptions['filter'],
+  timeoutMs = 8_000
+): Promise<RelayQueryResult> {
+  return new Promise((resolve) => {
+    const events: Event[] = [];
+    const abort = new AbortController();
+    let settled = false;
+    let eoseSeen = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let sub: { close: (reason?: string) => void } | null = null;
+
+    const finish = (ok: boolean, reason: string | null) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      abort.abort();
+      Promise.resolve()
+        .then(() => sub?.close('query finished'))
+        .catch(() => undefined);
+      resolve({ events, ok, reason });
+    };
+
+    timer = setTimeout(() => finish(false, 'timeout'), timeoutMs);
+    try {
+      sub = pool.subscribe([relay], filter, {
+        onevent: (event) => events.push(event),
+        oneose: () => {
+          eoseSeen = true;
+          finish(true, 'eose');
+        },
+        onclose: (reasons) => finish(eoseSeen, reasons[0]?.reason ?? null),
+        maxWait: timeoutMs + 30_000,
+        abort: abort.signal,
+      });
+      if (settled) {
+        Promise.resolve()
+          .then(() => sub?.close('query finished'))
+          .catch(() => undefined);
+      }
+    } catch (error) {
+      finish(false, error instanceof Error ? error.message : String(error));
+    }
+  });
+}
+
 export { AbstractSimplePool };

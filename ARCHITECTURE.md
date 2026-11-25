@@ -60,12 +60,15 @@ UI only ever shows a display name and a shortened npub.
 
 `settings`, `relays`, `media_providers`, `circles`, `circle_members`, `vlogs`,
 `clips`, `drafts`, `draft_clips`, `upload_jobs`, `favourites`, `circle_invites`,
-`contact_profiles`, `circle_memberships`, `control_outbox`.
+`contact_profiles`, `circle_memberships`, `control_outbox`, `comments`,
+`reactions`, `inbox_sync_state`, `inbox_relay_state`.
 
 Migrations use `PRAGMA user_version`; schema version 2 adds
-`vlogs.viewer_pubkey`, version 3 adds `circle_invites`, version 4 adds `contact_profiles` and the
-private name fields on invitations, version 6 scopes invitations to a recipient
-and adds durable membership receipts plus the control outbox.
+`vlogs.viewer_pubkey`, version 3 adds `circle_invites`, version 4 adds
+`contact_profiles` and the private name fields on invitations, version 6 scopes
+invitations to a recipient and adds durable membership receipts plus the control
+outbox, version 7 adds encrypted comments, reactions and the inbox cursor, and
+version 8 adds per-relay sync state and the remote-vlog lookup index.
 
 Design choices:
 - Every vlog row belongs to a viewer identity (`viewer_pubkey`). Local ids are
@@ -144,14 +147,52 @@ Invitations carry the owner's name plus the names the owner already knows for
 the roster, so a new member sees people by name immediately. An existing member
 learns a newly added member's name when that member accepts or posts.
 
+## Social interactions (`src/services/social.ts`)
+
+Comments and reactions are application control messages, not public Nostr
+reactions or comments. A create/edit/delete operation is queued locally and in
+`control_outbox` in one SQLite transaction, then wrapped once per current member
+plus the sender and delivered to their inbox relays. Delivery runs in the
+background; relay failure leaves the outbox row for the next sync.
+
+The inbox applies social controls after membership evidence, invitations and
+owner-signed roster updates. `comments` and `reactions` are scoped by
+`viewer_pubkey`. Comment threads are one visual level: replies to replies resolve
+to the nearest existing root. Edits and deletes use `(at, opId)`
+last-writer-wins; a delete clears the body but keeps the row so replies stay
+attached. Comment ids are author-scoped (`<author-prefix>-<uuid>`), so a member
+cannot squat another author's id. A create fills metadata for a placeholder
+created by an out-of-order edit or delete; if the placeholder came from a
+different author, the signed create replaces it and clears forged state.
+
+A viewer may react with up to 20 distinct emoji per target. Social controls from
+a sender whose local membership is `removed` are ignored, and queued social rows
+addressed to a removed member are dropped. Owner removal controls are delivered
+to the removed member and every remaining member, so other devices update their
+roster instead of trusting a stale `active` member. Already delivered history
+remains. There is no backfill of old threads for newly joined members.
+
+Inbox social validation uses a per-sync cache for circles, members, remote vlog
+ids and comment targets. Names are learned in timestamp order after a sync, not
+in the newest-first processing order, so a historical backfill cannot revert a
+contact to an older name.
+
 ## Receive flow (`src/services/inbox.ts`, `src/services/playback.ts`)
 
 1. Query `kind: 1059` gift wraps addressed to the identity, with NIP-42 AUTH.
+   Each relay is queried independently and paged with its own cursor. A relay is
+   complete only after an EOSE-backed empty page; timeouts and connection
+   failures never advance its cursor. Initial backfill and the incremental window
+   keep separate cursors in `inbox_relay_state`; later syncs use a 3-day
+   overlapping window.
 2. Unwrap each wrap (signature checks, rumor/seal pubkey match).
-3. Accept only `kind: 15` rumors with a well-formed `folio-key` payload and a
-   32-byte key.
-4. Deduplicate by rumor id, save the key to SecureStore, persist the vlog.
-5. On open: download ciphertext, verify SHA-256 and size, decrypt with
+3. Accept `kind: 15` file messages with a well-formed `folio-key` payload and a
+   32-byte key, and `kind: 14` control messages with a well-formed Folio payload.
+4. Deduplicate by rumor id, then apply membership evidence, invitations,
+   owner-signed roster updates, social controls and file messages. Learn display
+   names in timestamp order.
+5. For file messages, save the key to SecureStore and persist the vlog.
+6. On open: download ciphertext, verify SHA-256 and size, decrypt with
    per-chunk authentication, verify the plaintext hash, then hand the local file
    to `expo-video`.
 

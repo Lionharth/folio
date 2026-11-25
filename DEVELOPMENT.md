@@ -140,14 +140,21 @@ AES-GCM: round trips, empty file, partial reads, monotonic progress, unique
 nonces, wrong key, ciphertext tamper, header tamper, reordered chunks, dropped
 chunk, trailing data, truncation, invalid magic/version, default 4 MiB framing.
 
-`tests/nostr.test.ts` (6 tests): two identities exchange a NIP-17 key message,
+`tests/nostr.test.ts` (8 tests): two identities exchange a NIP-17 key message,
 all wraps share one rumor id, a third party cannot unwrap, tampering is
-detected, an impersonating seal is rejected, payload parsing rejects bad keys.
+detected, an impersonating seal is rejected, payload parsing rejects bad keys,
+and thumbnail payloads are validated.
+
+`tests/control.test.ts` (11 tests) covers invitation, membership and social
+control round trips, recipient fan-out, and validation. `tests/membership.test.ts`
+(6 tests) covers restore/decline ordering. `tests/social.test.ts` (7 tests)
+covers participation status, comment-id ownership, operation ordering, body and
+emoji validation, one-level threads and reaction summaries.
 
 ```bash
 npm test
-# tests 20
-# pass 20
+# tests 55
+# pass 55
 # fail 0
 ```
 
@@ -161,6 +168,8 @@ npx tsx scripts/limits-probe.ts
 ## Not yet verified
 
 - Physical Android device (camera, thermal, battery, real network switching).
+- Comment/reaction delivery, edits, deletes and paginated social restore on
+  physical devices; only unit-level validation is complete.
 - Push notification delivery (not implemented).
 - Background upload after process death (not implemented).
 - Android Auto Backup and cross-device recovery of media keys (recovery key

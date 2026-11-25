@@ -31,8 +31,12 @@ export function useInboxBootstrap(): void {
           queryClient.invalidateQueries({ queryKey: ['circles-with-members'] }),
           queryClient.invalidateQueries({ queryKey: ['circle'] }),
           queryClient.invalidateQueries({ queryKey: ['circle-invites'] }),
+          queryClient.invalidateQueries({ queryKey: ['circle-member'] }),
           queryClient.invalidateQueries({ queryKey: ['vlogs'] }),
           queryClient.invalidateQueries({ queryKey: ['contact-names'] }),
+          queryClient.invalidateQueries({ queryKey: ['comments'] }),
+          queryClient.invalidateQueries({ queryKey: ['reactions'] }),
+          queryClient.invalidateQueries({ queryKey: ['comment-reactions'] }),
         ]);
       } catch {
         // Offline is normal here; the next manual sync retries everything.

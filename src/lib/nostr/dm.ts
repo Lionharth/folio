@@ -5,7 +5,7 @@ import { KIND_PRIVATE_MESSAGE, parseControlPayload, type CircleControlPayload } 
 
 import { MAX_THUMBNAIL_BYTES } from '../../constants/media';
 import { bytesToBase64, base64ToBytes } from '../crypto/bytes';
-import { DEFAULT_DM_RELAYS, publishToRelays, queryRelays, type Pool } from './relays';
+import { DEFAULT_DM_RELAYS, publishToRelays, queryRelay, queryRelays, type Pool } from './relays';
 
 export const KIND_FILE_MESSAGE = 15;
 export const KIND_DM_RELAY_LIST = 10050;
@@ -243,29 +243,74 @@ export interface InboxResult {
   controls: ControlInboxMessage[];
 }
 
-/**
- * Fetches and unwraps gift wraps addressed to the secret key's public key in a
- * single relay query. Invalid seals, impostor rumors and non-FOLIO messages are
- * skipped. Nothing decrypted is logged.
- */
+export interface InboxRelayPage {
+  relay: string;
+  ok: boolean;
+  rawCount: number;
+  oldestCreatedAt: number | null;
+}
+
+export interface InboxPageResult extends InboxResult {
+  rawCount: number;
+  oldestCreatedAt: number | null;
+  relays: InboxRelayPage[];
+}
+
 export async function fetchInboxMessages(
   pool: Pool,
   relays: string[],
   secretKey: Uint8Array,
-  options: { since?: number; limit?: number } = {}
-): Promise<InboxResult> {
+  options: {
+    since?: number;
+    untilByRelay?: Map<string, number | null>;
+    limit?: number;
+    timeoutMs?: number;
+  } = {}
+): Promise<InboxPageResult> {
   const pubkey = getPublicKey(secretKey);
-  const wraps = await queryRelays(pool, relays, {
+  const uniqueRelays = [...new Set(relays)];
+  const filter = {
     kinds: [KIND_GIFT_WRAP],
     '#p': [pubkey],
     since: options.since,
     limit: options.limit ?? 200,
-  });
+  };
+  const results = await Promise.all(
+    uniqueRelays.map(async (relay) => {
+      const until = options.untilByRelay?.get(relay) ?? undefined;
+      const result = await queryRelay(
+        pool,
+        relay,
+        { ...filter, until: until ?? undefined },
+        options.timeoutMs
+      );
+      let oldest: number | null = null;
+      for (const wrap of result.events) {
+        if (oldest === null || wrap.created_at < oldest) oldest = wrap.created_at;
+      }
+      return {
+        relay,
+        ok: result.ok,
+        rawCount: result.events.length,
+        oldestCreatedAt: oldest,
+        events: result.events,
+      };
+    })
+  );
+
+  const uniqueWraps = new Map<string, Event>();
+  for (const result of results) {
+    for (const wrap of result.events) uniqueWraps.set(wrap.id, wrap);
+  }
+  let oldestCreatedAt: number | null = null;
+  for (const wrap of uniqueWraps.values()) {
+    if (oldestCreatedAt === null || wrap.created_at < oldestCreatedAt) oldestCreatedAt = wrap.created_at;
+  }
 
   const seen = new Set<string>();
   const files: InboxMessage[] = [];
   const controls: ControlInboxMessage[] = [];
-  for (const wrap of wraps) {
+  for (const wrap of uniqueWraps.values()) {
     let rumor;
     try {
       rumor = unwrapEvent(wrap, secretKey);
@@ -305,7 +350,18 @@ export async function fetchInboxMessages(
   }
   files.sort((a, b) => b.createdAt - a.createdAt);
   controls.sort((a, b) => b.createdAt - a.createdAt);
-  return { files, controls };
+  return {
+    files,
+    controls,
+    rawCount: uniqueWraps.size,
+    oldestCreatedAt,
+    relays: results.map(({ relay, ok, rawCount, oldestCreatedAt: oldest }) => ({
+      relay,
+      ok,
+      rawCount,
+      oldestCreatedAt: oldest,
+    })),
+  };
 }
 
 /** Publishes the NIP-17 inbox relay list (kind 10050). */

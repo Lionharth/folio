@@ -77,6 +77,33 @@ export interface Vlog {
   clips?: Clip[];
 }
 
+export type ReactionTargetType = 'vlog' | 'comment';
+
+export interface Comment {
+  id: string;
+  remoteVlogId: string;
+  circleId: string;
+  authorPubkey: string;
+  body: string;
+  replyToId?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  editedAt?: number | null;
+  deletedAt?: number | null;
+  placeholder?: boolean;
+}
+
+export interface Reaction {
+  targetType: ReactionTargetType;
+  targetId: string;
+  remoteVlogId: string;
+  circleId: string;
+  authorPubkey: string;
+  emoji: string;
+  active: boolean;
+  updatedAt: number;
+}
+
 export interface Draft {
   id: string;
   title?: string | null;

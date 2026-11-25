@@ -7,9 +7,12 @@ import {
   FOLIO_CONTROL_TAG,
   parseControlPayload,
   wrapControl,
+  wrapControlForRecipients,
   type CircleAcceptPayload,
+  type CircleCommentPayload,
   type CircleInvitePayload,
   type CircleMembershipPayload,
+  type CircleReactionPayload,
 } from '../src/lib/nostr/circleControl';
 
 function inviteFor(ownerPubkey: string, members: string[]): CircleInvitePayload {
@@ -203,4 +206,111 @@ test('duplicate roster entries are collapsed', () => {
   ]);
   assert.ok(parsed && parsed.type === 'circle-invite');
   assert.deepEqual(parsed.circle.members, [ownerPub, memberPub]);
+});
+
+function commentPayload(overrides: Partial<CircleCommentPayload> = {}): CircleCommentPayload {
+  return {
+    v: 1,
+    type: 'circle-comment',
+    opId: 'op-1',
+    action: 'create',
+    commentId: 'comment-1',
+    circleId: 'circle-1',
+    vlogId: 'vlog-1',
+    body: 'A thought',
+    at: 1_700_000_300_000,
+    ...overrides,
+  };
+}
+
+function reactionPayload(overrides: Partial<CircleReactionPayload> = {}): CircleReactionPayload {
+  return {
+    v: 1,
+    type: 'circle-reaction',
+    opId: 'op-2',
+    targetType: 'vlog',
+    targetId: 'vlog-1',
+    vlogId: 'vlog-1',
+    circleId: 'circle-1',
+    emoji: '\u2764\ufe0f',
+    active: true,
+    at: 1_700_000_300_001,
+    ...overrides,
+  };
+}
+
+test('one social rumor is wrapped for every recipient and the sender', () => {
+  const sender = generateSecretKey();
+  const member = generateSecretKey();
+  const outsider = generateSecretKey();
+  const senderPub = getPublicKey(sender);
+  const memberPub = getPublicKey(member);
+  const payload = commentPayload({ authorName: 'Leon' });
+
+  const { rumorId, wraps } = wrapControlForRecipients(payload, sender, [memberPub]);
+  assert.equal(wraps.length, 2);
+  assert.deepEqual(
+    wraps.map((wrap) => wrap.tags.find((tag) => tag[0] === 'p')?.[1]).sort(),
+    [memberPub, senderPub].sort()
+  );
+
+  const wrapFor = (pubkey: string) =>
+    wraps.find((wrap) => wrap.tags.some((tag) => tag[0] === 'p' && tag[1] === pubkey))!;
+  const memberRumor = unwrapEvent(wrapFor(memberPub), member);
+  const senderRumor = unwrapEvent(wrapFor(senderPub), sender);
+  assert.equal(memberRumor.id, rumorId);
+  assert.equal(senderRumor.id, rumorId);
+  assert.deepEqual(parseControlPayload(memberRumor.tags), payload);
+  assert.throws(() => unwrapEvent(wrapFor(memberPub), outsider));
+});
+
+test('social comment payloads validate action-specific fields', () => {
+  const wrapTag = (value: unknown) => [[FOLIO_CONTROL_TAG, JSON.stringify(value)]];
+  assert.deepEqual(
+    parseControlPayload(wrapTag(commentPayload({ replyToId: 'comment-0' }))),
+    commentPayload({ replyToId: 'comment-0' })
+  );
+  assert.deepEqual(parseControlPayload(wrapTag(commentPayload({ action: 'edit' }))), commentPayload({ action: 'edit' }));
+  assert.deepEqual(parseControlPayload(wrapTag(commentPayload({ action: 'delete', body: undefined }))), {
+    v: 1,
+    type: 'circle-comment',
+    opId: 'op-1',
+    action: 'delete',
+    commentId: 'comment-1',
+    circleId: 'circle-1',
+    vlogId: 'vlog-1',
+    at: 1_700_000_300_000,
+  });
+
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ action: 'delete', body: 'leftover' }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ body: '' }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ body: 'x'.repeat(1001) }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ action: 'edit', replyToId: 'comment-0' }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ action: 'edit', authorName: 'Sam' }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ replyToId: 'comment-1' }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ action: 'unknown' as never }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ at: 1.5 }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ opId: ' op ' }))), null);
+  assert.equal(parseControlPayload(wrapTag(commentPayload({ authorName: 'x'.repeat(41) }))), null);
+});
+
+test('social reaction payloads validate targets and emoji', () => {
+  const wrapTag = (value: unknown) => [[FOLIO_CONTROL_TAG, JSON.stringify(value)]];
+  assert.deepEqual(parseControlPayload(wrapTag(reactionPayload())), reactionPayload());
+  assert.deepEqual(
+    parseControlPayload(wrapTag(reactionPayload({ targetType: 'comment', targetId: 'comment-1' }))),
+    reactionPayload({ targetType: 'comment', targetId: 'comment-1' })
+  );
+  assert.deepEqual(
+    parseControlPayload(wrapTag(reactionPayload({ active: false, authorName: 'Sam' }))),
+    reactionPayload({ active: false, authorName: 'Sam' })
+  );
+
+  assert.equal(parseControlPayload(wrapTag(reactionPayload({ targetId: 'another-vlog' }))), null);
+  assert.equal(parseControlPayload(wrapTag(reactionPayload({ targetType: 'message' as never }))), null);
+  assert.equal(parseControlPayload(wrapTag(reactionPayload({ active: 'yes' as never }))), null);
+  assert.equal(parseControlPayload(wrapTag(reactionPayload({ emoji: 'hello' }))), null);
+  assert.equal(parseControlPayload(wrapTag(reactionPayload({ emoji: '\u2764\ufe0f \u2764\ufe0f' }))), null);
+  assert.equal(parseControlPayload(wrapTag(reactionPayload({ authorName: 'x'.repeat(41) }))), null);
+  assert.equal(parseControlPayload(wrapTag(reactionPayload({ at: -1 }))), null);
 });

@@ -101,6 +101,11 @@ Even with correct encryption, the following leaks:
 - A name is self-asserted by the sender inside an authenticated gift wrap. It
   proves which key claims the name, not that the human is who the name suggests.
   Circle membership is the trust signal.
+- Comment and reaction text is encrypted inside NIP-17 gift wraps. Relays still
+  see how often a member posts, the approximate size of each control, which
+  recipient keys have messages, and the timing of the fan-out.
+- Every social operation creates one gift wrap per current member plus the
+  sender, so circle size and activity volume are observable to relays.
 - No anonymity claims are made.
 
 ## Membership authorization
@@ -121,6 +126,22 @@ Invitation rules:
   in their list;
 - removal increments `membership_version`, stops future keys, and never claims
   to erase downloaded media.
+
+Social controls are accepted only when the local circle exists, the viewing
+identity and the sender are `active` or `invited`, and, when the target is known
+locally, it belongs to the same circle. Comment ids are author-scoped so a member
+cannot create or suppress another author's comment by reusing its id.
+
+Owner removal controls are delivered to the removed member and every remaining
+member. A remaining member applies the owner-signed roster update, so a removed
+member cannot keep posting to devices that have processed the removal. A removed
+member cannot add new comments or reactions, and queued social rows addressed to
+that member are dropped. Content already delivered stays on recipients' devices
+and cannot be revoked.
+
+Inbox pagination marks a relay complete only after an EOSE-backed empty page.
+Relay timeouts and partial responses do not advance a cursor or mark history
+complete, preventing a flaky first sync from permanently skipping old messages.
 
 A member can only decrypt a clip if they receive its media key. Post keys are
 sent to `active` and `invited` members: the owner already authorized the invite,

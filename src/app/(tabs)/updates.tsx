@@ -61,6 +61,10 @@ export default function UpdatesScreen() {
         queryClient.invalidateQueries({ queryKey: ['circles'] }),
         queryClient.invalidateQueries({ queryKey: ['circles-with-members'] }),
         queryClient.invalidateQueries({ queryKey: ['circle-invites'] }),
+        queryClient.invalidateQueries({ queryKey: ['circle-member'] }),
+        queryClient.invalidateQueries({ queryKey: ['comments'] }),
+        queryClient.invalidateQueries({ queryKey: ['reactions'] }),
+        queryClient.invalidateQueries({ queryKey: ['comment-reactions'] }),
       ]);
     } catch (error) {
       setSyncMessage('Could not reach your relays');

@@ -321,6 +321,64 @@ export async function removeCircleMember(circleId: string, pubkey: string): Prom
   await db.runAsync('UPDATE circles SET membership_version = membership_version + 1, updated_at = ? WHERE id = ?', now, circleId);
 }
 
+export async function applyCircleRosterUpdate(input: {
+  id: string;
+  ownerPubkey: string;
+  name: string;
+  description?: string | null;
+  membershipVersion: number;
+  members: string[];
+  selfPubkey: string;
+  removedPubkey: string;
+}): Promise<boolean> {
+  const db = await getDatabase();
+  const circle = await getCircle(input.id);
+  if (!circle || circle.ownerPubkey !== input.ownerPubkey) return false;
+  if (circle.membershipVersion >= input.membershipVersion) return false;
+
+  const roster = new Set([input.ownerPubkey, ...input.members]);
+  roster.delete(input.removedPubkey);
+  if (!roster.has(input.selfPubkey)) return false;
+
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      'UPDATE circles SET name = ?, description = ?, membership_version = ?, updated_at = ? WHERE id = ?',
+      input.name,
+      input.description ?? null,
+      input.membershipVersion,
+      now,
+      input.id
+    );
+    const current = await db.getAllAsync<{ pubkey: string }>(
+      'SELECT pubkey FROM circle_members WHERE circle_id = ?',
+      input.id
+    );
+    for (const row of current) {
+      if (row.pubkey !== input.ownerPubkey && !roster.has(row.pubkey)) {
+        await db.runAsync(
+          "UPDATE circle_members SET status = 'removed' WHERE circle_id = ? AND pubkey = ?",
+          input.id,
+          row.pubkey
+        );
+      }
+    }
+    for (const pubkey of roster) {
+      const role = pubkey === input.ownerPubkey ? 'owner' : 'member';
+      await db.runAsync(
+        `INSERT INTO circle_members (circle_id, pubkey, role, status, joined_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(circle_id, pubkey) DO UPDATE SET role = excluded.role`,
+        input.id,
+        pubkey,
+        role,
+        'active',
+        now
+      );
+    }
+  });
+  return true;
+}
+
 export async function setCircleMuted(circleId: string, muted: boolean): Promise<void> {
   const db = await getDatabase();
   await db.runAsync('UPDATE circles SET muted = ?, updated_at = ? WHERE id = ?', muted ? 1 : 0, Date.now(), circleId);
@@ -434,6 +492,19 @@ export async function getVlog(viewerPubkey: string, id: string): Promise<Vlog | 
   if (!row) return null;
   const [vlog] = await attachClips([mapVlog(row)]);
   return vlog;
+}
+
+export async function getVlogCircleByRemoteId(
+  viewerPubkey: string,
+  remoteId: string
+): Promise<{ id: string; circleId: string | null } | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<{ id: string; circle_id: string | null }>(
+    'SELECT id, circle_id FROM vlogs WHERE remote_id = ? AND viewer_pubkey = ? LIMIT 1',
+    remoteId,
+    viewerPubkey
+  );
+  return row ? { id: row.id, circleId: row.circle_id } : null;
 }
 
 async function attachClips(vlogs: Vlog[]): Promise<Vlog[]> {

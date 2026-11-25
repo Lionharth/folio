@@ -4,6 +4,20 @@
 
 ### Added
 
+- Private comments and reactions on vlogs and comments, delivered as encrypted
+  NIP-17 control messages. Comments support one-level threads, author edits and
+  author deletes; reactions support multiple distinct emoji from a picker plus a
+  custom input. Social activity appears only on the vlog screen.
+- The inbox now pages through initial gift-wrap history per relay, with independent
+  cursors, EOSE-aware completion and a 3-day overlap for NIP-59's randomised
+  timestamps. Offline or partial relay responses can no longer mark history
+  complete, so a large restore survives a flaky first sync.
+- Comment ids are author-scoped, and a create can replace a forged placeholder,
+  so one member cannot hide another member's comment by reusing its id.
+- Owner removals are delivered to the removed member and the remaining roster.
+  Removed members cannot add new comments or reactions, queued social messages
+  addressed to them are dropped, and other members update their local roster.
+  Already received social history stays visible.
 - Seamless circle restore: accepting, declining or being removed publishes a
   private `circle-membership` receipt to the identity's own inbox. Restoring an
   identity on a new phone or after a reinstall re-applies the newest receipts,

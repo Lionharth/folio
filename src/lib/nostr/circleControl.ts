@@ -1,8 +1,11 @@
 import { createRumor, createSeal, createWrap } from 'nostr-tools/nip59';
-import { type Event } from 'nostr-tools/pure';
+import { getPublicKey, type Event } from 'nostr-tools/pure';
+
+import { parseSocialControl, type SocialControlPayload } from './socialControl';
 
 export const KIND_PRIVATE_MESSAGE = 14;
 export const FOLIO_CONTROL_TAG = 'folio-control';
+export type { CircleCommentPayload, CircleReactionPayload } from './socialControl';
 
 export interface CircleInvitePayload {
   v: 1;
@@ -51,7 +54,11 @@ export interface CircleMembershipPayload {
   circle?: CircleInvitePayload['circle'];
 }
 
-export type CircleControlPayload = CircleInvitePayload | CircleAcceptPayload | CircleMembershipPayload;
+export type CircleControlPayload =
+  | CircleInvitePayload
+  | CircleAcceptPayload
+  | CircleMembershipPayload
+  | SocialControlPayload;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -191,6 +198,10 @@ export function parseControlPayload(tags: string[][]): CircleControlPayload | nu
     };
   }
 
+  if (value.type === 'circle-comment' || value.type === 'circle-reaction') {
+    return parseSocialControl(value);
+  }
+
   return null;
 }
 
@@ -225,4 +236,34 @@ export function wrapControl(
   const seal = createSeal(rumor, senderSecret, recipientPubkey);
   const wrap = createWrap(seal, recipientPubkey);
   return { rumorId: rumor.id, wrap };
+}
+
+export interface WrappedControlFanout {
+  rumorId: string;
+  wraps: Event[];
+}
+
+export function wrapControlForRecipients(
+  payload: CircleControlPayload,
+  senderSecret: Uint8Array,
+  recipientPubkeys: string[]
+): WrappedControlFanout {
+  const senderPubkey = getPublicKey(senderSecret);
+  const targets = [...new Set([...recipientPubkeys, senderPubkey])];
+  const rumor = createRumor(
+    {
+      kind: KIND_PRIVATE_MESSAGE,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ...targets.map((pubkey) => ['p', pubkey]),
+        [FOLIO_CONTROL_TAG, JSON.stringify(payload)],
+      ],
+      content: '',
+    },
+    senderSecret
+  );
+  const wraps = targets.map((recipient) =>
+    createWrap(createSeal(rumor, senderSecret, recipient), recipient)
+  );
+  return { rumorId: rumor.id, wraps };
 }

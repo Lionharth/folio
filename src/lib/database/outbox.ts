@@ -35,23 +35,52 @@ export async function enqueueControl(input: {
   recipientPubkey: string;
   payload: CircleControlPayload;
 }): Promise<string> {
-  const db = await getDatabase();
-  const id = randomUUID();
-  await db.runAsync(
-    'INSERT INTO control_outbox (id, sender_pubkey, recipient_pubkey, payload, created_at, sent_at) VALUES (?, ?, ?, ?, ?, NULL)',
-    id,
-    input.senderPubkey,
-    input.recipientPubkey,
-    JSON.stringify(input.payload),
-    Date.now()
-  );
+  const [id] = await enqueueControls(input.senderPubkey, [
+    { recipientPubkey: input.recipientPubkey, payload: input.payload },
+  ]);
   return id;
 }
 
-export async function listPendingControls(senderPubkey: string, limit = 20): Promise<PendingControl[]> {
+export async function enqueueControls(
+  senderPubkey: string,
+  recipients: { recipientPubkey: string; payload: CircleControlPayload }[],
+  options: { transaction?: boolean } = {}
+): Promise<string[]> {
+  if (recipients.length === 0) return [];
+  const db = await getDatabase();
+  const ids = recipients.map(() => randomUUID());
+  const now = Date.now();
+  const insert = async () => {
+    for (let index = 0; index < recipients.length; index += 1) {
+      const recipient = recipients[index];
+      await db.runAsync(
+        'INSERT INTO control_outbox (id, sender_pubkey, recipient_pubkey, payload, created_at, sent_at) VALUES (?, ?, ?, ?, ?, NULL)',
+        ids[index],
+        senderPubkey,
+        recipient.recipientPubkey,
+        JSON.stringify(recipient.payload),
+        now
+      );
+    }
+  };
+  if (options.transaction === false) {
+    await insert();
+  } else {
+    await db.withTransactionAsync(insert);
+  }
+  return ids;
+}
+
+export async function listPendingControls(senderPubkey: string, limit = 100): Promise<PendingControl[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<OutboxRow>(
-    'SELECT * FROM control_outbox WHERE sender_pubkey = ? AND sent_at IS NULL ORDER BY created_at ASC LIMIT ?',
+    `SELECT * FROM control_outbox
+     WHERE sender_pubkey = ? AND sent_at IS NULL
+     ORDER BY CASE
+       WHEN payload LIKE '%"type":"circle-comment"%' OR payload LIKE '%"type":"circle-reaction"%' THEN 1
+       ELSE 0
+     END ASC, created_at ASC
+     LIMIT ?`,
     senderPubkey,
     limit
   );

@@ -56,6 +56,10 @@ export default function CirclesScreen() {
       queryClient.invalidateQueries({ queryKey: ['circles-with-members'] }),
       queryClient.invalidateQueries({ queryKey: ['circles'] }),
       queryClient.invalidateQueries({ queryKey: ['circle'] }),
+      queryClient.invalidateQueries({ queryKey: ['circle-member'] }),
+      queryClient.invalidateQueries({ queryKey: ['comments'] }),
+      queryClient.invalidateQueries({ queryKey: ['reactions'] }),
+      queryClient.invalidateQueries({ queryKey: ['comment-reactions'] }),
     ]);
   }, [queryClient]);
 

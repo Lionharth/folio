@@ -27,6 +27,7 @@ import {
 } from '../lib/nostr/circleControl';
 import { resolveInboxRelays } from '../lib/nostr/dm';
 import { createPool, DEFAULT_DM_RELAYS, publishToRelays, type Pool } from '../lib/nostr/relays';
+import { isParticipatingStatus } from '../lib/social/rules';
 import type { Circle, CircleMember } from '../types/models';
 
 const RECEIPT_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;
@@ -176,7 +177,8 @@ export async function recordMembershipReceipt(input: {
 /** Re-publishes receipts that were never delivered or are older than a week. */
 export async function flushMembershipReceipts(
   secretKey: Uint8Array,
-  pool?: Pool
+  pool?: Pool,
+  timeBudgetMs = 8_000
 ): Promise<number> {
   const recipientPubkey = getPublicKey(secretKey);
   const staleBefore = Date.now() - RECEIPT_REFRESH_MS;
@@ -184,7 +186,9 @@ export async function flushMembershipReceipts(
   if (rows.length === 0) return 0;
   return withOptionalPool(secretKey, pool, async (activePool) => {
     let published = 0;
+    const startedAt = Date.now();
     for (const row of rows) {
+      if (Date.now() - startedAt > timeBudgetMs) break;
       try {
         const accepted = await publishControl(activePool, secretKey, recipientPubkey, row.payload);
         if (accepted.length > 0) {
@@ -206,14 +210,36 @@ export async function flushMembershipReceipts(
 }
 
 /** Retries owner-to-member controls such as removal notices. */
-export async function flushControlOutbox(secretKey: Uint8Array, pool?: Pool): Promise<number> {
+export async function flushControlOutbox(
+  secretKey: Uint8Array,
+  pool?: Pool,
+  timeBudgetMs = 8_000
+): Promise<number> {
   const senderPubkey = getPublicKey(secretKey);
   const pending = await listPendingControls(senderPubkey);
   if (pending.length === 0) return 0;
   return withOptionalPool(secretKey, pool, async (activePool) => {
     let sent = 0;
+    const startedAt = Date.now();
     for (const control of pending) {
+      if (Date.now() - startedAt > timeBudgetMs) break;
       try {
+        if (control.payload.type === 'circle-comment' || control.payload.type === 'circle-reaction') {
+          const senderMember = await getCircleMember(control.payload.circleId, senderPubkey);
+          if (!isParticipatingStatus(senderMember?.status)) {
+            await markControlSent(control.id);
+            sent += 1;
+            continue;
+          }
+          if (control.recipientPubkey !== senderPubkey) {
+            const member = await getCircleMember(control.payload.circleId, control.recipientPubkey);
+            if (!isParticipatingStatus(member?.status)) {
+              await markControlSent(control.id);
+              sent += 1;
+              continue;
+            }
+          }
+        }
         const accepted = await publishControl(
           activePool,
           secretKey,
@@ -235,10 +261,11 @@ export async function flushControlOutbox(secretKey: Uint8Array, pool?: Pool): Pr
 export async function publishMembershipControl(
   secretKey: Uint8Array,
   recipientPubkey: string,
-  payload: CircleControlPayload
+  payload: CircleControlPayload,
+  pool?: Pool
 ): Promise<string[]> {
-  return withOptionalPool(secretKey, undefined, (pool) =>
-    publishControl(pool, secretKey, recipientPubkey, payload)
+  return withOptionalPool(secretKey, pool, (activePool) =>
+    publishControl(activePool, secretKey, recipientPubkey, payload)
   );
 }
 

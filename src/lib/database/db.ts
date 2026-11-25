@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
 const DATABASE_NAME = 'folio.db';
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 8;
 
 let database: SQLite.SQLiteDatabase | null = null;
 let opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -177,6 +177,57 @@ CREATE TABLE IF NOT EXISTS contact_profiles (
 );
 `;
 
+const MIGRATION_7_TABLES = `
+CREATE TABLE IF NOT EXISTS comments (
+  viewer_pubkey TEXT NOT NULL,
+  id TEXT NOT NULL,
+  remote_vlog_id TEXT NOT NULL,
+  circle_id TEXT NOT NULL,
+  author_pubkey TEXT NOT NULL,
+  body TEXT NOT NULL,
+  reply_to_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_op_id TEXT NOT NULL,
+  edited_at INTEGER,
+  deleted_at INTEGER,
+  placeholder INTEGER NOT NULL DEFAULT 0,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY (viewer_pubkey, id)
+);
+
+CREATE INDEX IF NOT EXISTS comments_vlog_idx
+  ON comments (viewer_pubkey, remote_vlog_id, created_at);
+CREATE INDEX IF NOT EXISTS comments_reply_idx
+  ON comments (viewer_pubkey, remote_vlog_id, reply_to_id);
+
+CREATE TABLE IF NOT EXISTS reactions (
+  viewer_pubkey TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  remote_vlog_id TEXT NOT NULL,
+  circle_id TEXT NOT NULL,
+  author_pubkey TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  active INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  last_op_id TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  PRIMARY KEY (viewer_pubkey, target_type, target_id, author_pubkey, emoji)
+);
+
+CREATE INDEX IF NOT EXISTS reactions_target_idx
+  ON reactions (viewer_pubkey, target_type, target_id, active);
+
+CREATE TABLE IF NOT EXISTS inbox_sync_state (
+  recipient_pubkey TEXT PRIMARY KEY NOT NULL,
+  backfill_complete INTEGER NOT NULL DEFAULT 0,
+  backfill_until INTEGER,
+  last_sync_at INTEGER,
+  updated_at INTEGER NOT NULL
+);
+`;
+
 const MIGRATION_6_TABLES = `
 CREATE TABLE IF NOT EXISTS circle_memberships (
   recipient_pubkey TEXT NOT NULL,
@@ -205,6 +256,22 @@ CREATE TABLE IF NOT EXISTS control_outbox (
 
 CREATE INDEX IF NOT EXISTS control_outbox_sender_idx
   ON control_outbox (sender_pubkey, sent_at);
+`;
+
+const MIGRATION_8_TABLES = `
+CREATE TABLE IF NOT EXISTS inbox_relay_state (
+  recipient_pubkey TEXT NOT NULL,
+  relay TEXT NOT NULL,
+  backfill_until INTEGER,
+  backfill_complete INTEGER NOT NULL DEFAULT 0,
+  incremental_until INTEGER,
+  incremental_complete INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (recipient_pubkey, relay)
+);
+
+CREATE INDEX IF NOT EXISTS vlogs_remote_idx
+  ON vlogs (viewer_pubkey, remote_id);
 `;
 
 async function addColumnIfMissing(
@@ -260,6 +327,12 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
       CREATE INDEX IF NOT EXISTS circle_invites_recipient_status_idx
         ON circle_invites (recipient_pubkey, status, received_at DESC);
     `);
+  }
+  if (current < 7) {
+    await db.execAsync(MIGRATION_7_TABLES);
+  }
+  if (current < 8) {
+    await db.execAsync(MIGRATION_8_TABLES);
   }
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }

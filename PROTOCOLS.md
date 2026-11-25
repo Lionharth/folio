@@ -202,6 +202,112 @@ receipt's version are never shown as pending. A newer invitation is a genuine
 re-invite and asks again. Removal notices are queued in `control_outbox` on the
 owner's device until a relay accepts them.
 
+## Social control messages
+
+Reactions and comments use the same encrypted `kind: 14` control rumor and
+`folio-control` tag. They are never public events.
+
+Comment operation:
+
+```json
+{
+  "v": 1,
+  "type": "circle-comment",
+  "opId": "uuid",
+  "action": "create",
+  "commentId": "uuid",
+  "circleId": "uuid",
+  "vlogId": "remote-vlog-uuid",
+  "body": "plain text",
+  "replyToId": "optional-comment-uuid",
+  "authorName": "Sam",
+  "at": 1700000200000
+}
+```
+
+`action` is `create`, `edit` or `delete`. A delete carries no body, reply or
+name. `body` is 1–1000 characters and is stored and rendered as plain text.
+`commentId` is stable across edits and deletes and must be author-scoped:
+`<first-10-hex-of-sender-pubkey>-<uuid>`. `at` is milliseconds. The sender is
+the rumor author; no author key is trusted from the payload. A create whose id
+prefix does not match its sender is rejected, so one member cannot squat another
+author's comment id.
+
+Reaction operation:
+
+```json
+{
+  "v": 1,
+  "type": "circle-reaction",
+  "opId": "uuid",
+  "targetType": "vlog",
+  "targetId": "remote-vlog-uuid",
+  "vlogId": "remote-vlog-uuid",
+  "circleId": "uuid",
+  "emoji": "one emoji",
+  "active": true,
+  "authorName": "Sam",
+  "at": 1700000200000
+}
+```
+
+`targetType` is `vlog` or `comment`. A vlog target requires `targetId` to equal
+`vlogId`; a comment target uses the comment id but still carries the vlog id.
+`active: false` removes that sender's reaction. A sender may hold up to 20
+distinct emoji on one target; repeating an existing emoji is idempotent.
+Emoji are NFC-normalised, 1–16 code points, at most 64 UTF-16 units, contain no
+whitespace, ASCII letters or digits, and must contain a known pictographic or
+symbol range.
+
+Transport and ordering:
+
+- A fresh send creates one control rumor per operation with one `p` tag per
+  current member and the sender. It is sealed and gift-wrapped separately for
+  each recipient and published to their kind-10050 inbox relays.
+- The outbox holds one retry row per recipient and may rewrap a row for that
+  recipient. Rows addressed to a member who is now removed are dropped for social
+  payloads; membership removal notices are never dropped this way.
+- Comment edits/deletes and reaction state use last-writer-wins ordering by
+  `(at, opId)`. A create never overwrites a newer edit or delete. An edit or
+  delete that arrives before its create is stored as a hidden placeholder until
+  the create fills the missing metadata.
+- A deleted comment keeps its author, timestamps and replies; the body is
+  cleared. Reactions on deleted comments are hidden.
+- When the target vlog or comment is already known, it must belong to the
+  payload's circle and vlog. Unknown targets are stored until they arrive.
+- Owner removal controls are delivered to the removed member and every remaining
+  member. A remaining member applies the owner-signed snapshot as a roster
+  update when its version is newer; the removed member receives the normal
+  self-removal receipt.
+- A create that arrives for a placeholder created by a different author replaces
+  that placeholder and clears its forged edit/delete state.
+- Inbound social controls are accepted only when the local circle exists, the
+  viewing identity is `active` or `invited`, and the sender is `active` or
+  `invited`. Prior content from a later-removed member stays visible; new
+  controls from that member are ignored.
+- New members do not receive old thread history. Only interactions created while
+  they are current members are delivered.
+- Unknown control types are still ignored by `parseControlPayload`, so older
+  clients simply do not show social activity.
+
+## Inbox history and pagination
+
+The inbox still queries `kind: 1059` gift wraps addressed to the identity. Each
+relay is queried separately with a limit of 500 and its own `until` cursor, so a
+relay that returns a different range cannot cause another relay's events to be
+skipped. A relay is complete only when it returns an empty page (or reaches the
+`since` bound). Timeouts and connection failures mark it incomplete for the sync
+and do not advance its cursor; successful pages advance the cursor until empty.
+
+Backfill and incremental windows keep separate per-relay cursors and completion
+flags in `inbox_relay_state`. Initial backfill pages backwards with a 15-second
+budget; later syncs fetch a 3-day overlapping incremental window because NIP-59
+randomises gift-wrap timestamps by up to two days. A relay that needs more than
+the page budget resumes on the next sync. `inbox_sync_state.last_sync_at` only
+advances when the incremental pass completes for every relay, independently of
+backfill progress. Fetched wraps are deduplicated globally by rumor id before
+names, membership, invitation, roster, social and file processing.
+
 ## FOLIO-FC1
 
 ```

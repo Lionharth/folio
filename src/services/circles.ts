@@ -2,7 +2,7 @@ import { getPublicKey } from 'nostr-tools/pure';
 
 import { getInvite, setInviteStatus, type CircleInvite } from '../lib/database/invites';
 import { listContactNames } from '../lib/database/contacts';
-import { enqueueControl, markControlSent } from '../lib/database/outbox';
+import { enqueueControls, markControlSent } from '../lib/database/outbox';
 import {
   addCircleFromInvite,
   addCircleMember,
@@ -17,6 +17,7 @@ import {
 } from '../lib/nostr/circleControl';
 import { DEFAULT_DM_RELAYS, createPool, publishToRelays, type Pool } from '../lib/nostr/relays';
 import { resolveInboxRelays } from '../lib/nostr/dm';
+import { isParticipatingStatus } from '../lib/social/rules';
 import {
   buildCircleSnapshot,
   publishMembershipControl,
@@ -267,9 +268,10 @@ export interface RemoveMemberResult {
 }
 
 /**
- * Removes a member locally and tells them privately. Delivery is queued in the
- * control outbox and retried on the next sync, so an offline owner still stops
- * sending future keys immediately.
+ * Removes a member locally and sends the signed roster update to the removed
+ * member and the remaining members. Delivery is queued in the control outbox
+ * and retried on the next sync, so an offline owner still stops sending future
+ * keys immediately.
  */
 export async function removeMember(input: {
   secretKey: Uint8Array;
@@ -307,23 +309,48 @@ export async function removeMember(input: {
     circle: snapshot,
   };
 
-  const outboxId = await enqueueControl({
+  const recipients = [
+    ...new Set([
+      senderPubkey,
+      input.memberPubkey,
+      ...members
+        .filter((member) => isParticipatingStatus(member.status))
+        .map((member) => member.pubkey),
+    ]),
+  ];
+  const outboxIds = await enqueueControls(
     senderPubkey,
-    recipientPubkey: input.memberPubkey,
-    payload,
-  });
+    recipients.map((recipientPubkey) => ({ recipientPubkey, payload }))
+  );
+  const outboxByRecipient = new Map(
+    recipients.map((recipient, index) => [recipient, outboxIds[index]])
+  );
   await removeCircleMember(circle.id, input.memberPubkey);
 
-  let delivered = false;
+  const pool = createPool({ secretKey: input.secretKey });
+  let results: PromiseSettledResult<boolean>[] = [];
   try {
-    const accepted = await publishMembershipControl(input.secretKey, input.memberPubkey, payload);
-    if (accepted.length > 0) {
-      await markControlSent(outboxId);
-      delivered = true;
-    }
-  } catch {
-    // Kept in the outbox for the next successful sync.
+    results = await Promise.allSettled(
+      recipients.map(async (recipient) => {
+        const accepted = await publishMembershipControl(
+          input.secretKey,
+          recipient,
+          payload,
+          pool
+        );
+        if (accepted.length > 0) {
+          const outboxId = outboxByRecipient.get(recipient);
+          if (outboxId) await markControlSent(outboxId);
+          return recipient === input.memberPubkey;
+        }
+        return false;
+      })
+    );
+  } finally {
+    pool.destroy();
   }
 
-  return { delivered };
+  return {
+    delivered: results.some((result) => result.status === 'fulfilled' && result.value),
+  };
 }
