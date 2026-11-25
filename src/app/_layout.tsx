@@ -3,9 +3,11 @@
  * nostr-tools see a WebCrypto-compatible getRandomValues global.
  */
 import '../lib/crypto/polyfill';
+import '../lib/notifications/backgroundTask';
+import '../lib/notifications/handler';
 
 import React, { useEffect } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -27,6 +29,8 @@ import {
 } from '@expo-google-fonts/manrope';
 import { useFonts } from 'expo-font';
 
+import { useNotificationRouting } from '../hooks/useNotificationRouting';
+import { clearIconBadgeAsync, reconcileNotificationRuntimeAsync } from '../services/notifications';
 import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
 import { useSession } from '../stores/session';
 
@@ -59,6 +63,7 @@ function RootStack() {
         <Stack.Screen name="circle/[id]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="circle/new" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="identity/new" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="notifications" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="lab" options={{ animation: 'slide_from_bottom' }} />
       </Stack>
     </>
@@ -85,9 +90,23 @@ export default function RootLayout() {
 
   const ready = fontsLoaded || fontError;
 
+  useNotificationRouting(Boolean(ready));
+
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => undefined);
   }, [ready]);
+
+  useEffect(() => {
+    void reconcileNotificationRuntimeAsync();
+    void clearIconBadgeAsync();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      void reconcileNotificationRuntimeAsync();
+      void clearIconBadgeAsync();
+      void queryClient.invalidateQueries({ queryKey: ['unread'] });
+    });
+    return () => subscription.remove();
+  }, []);
 
   if (!ready) {
     return (

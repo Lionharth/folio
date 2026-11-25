@@ -58,7 +58,8 @@
       [
         "expo-notifications",
         {
-          "color": "#171717"
+          "color": "#171717",
+          "enableRemoteNotifications": false
         }
       ],
       "expo-background-task",

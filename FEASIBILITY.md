@@ -73,8 +73,10 @@ nostrcheck (400), psbt.me (payment over 1 MiB), satellite.earth (paid account).
    is not implemented.
 5. **Media key durability.** Keys live in SecureStore. Restoring an nsec on a new
    device does not restore old media keys; an encrypted key backup is required.
-6. **No background delivery.** Uploads and inbox sync stop when the process dies.
-   Push notifications are not implemented.
+6. **Background delivery is best-effort.** Uploads stop when the process dies.
+   Inbox sync can run through `expo-background-task` while local notifications
+   are enabled, but WorkManager/BGTaskScheduler decide when and force-stopping
+   the app stops it. Remote push is not implemented.
 7. **Windows build friction.** Native builds require a short path and a CMake
    object-path override; see DEVELOPMENT.md. This affects the developer machine,
    not the product architecture.

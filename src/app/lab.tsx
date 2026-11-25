@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { router } from 'expo-router';
+import * as BackgroundTask from 'expo-background-task';
 
 import { AppText } from '../components/ui/AppText';
 import { Button } from '../components/ui/Button';
@@ -12,6 +13,12 @@ import { DEFAULT_RELAY_LIST, PROVIDER_PRESETS } from '../constants/providers';
 import { BlossomClient } from '../lib/blossom/client';
 import { expoAesGcm, expoRandom } from '../lib/crypto/expoAes';
 import { bytesEqual } from '../lib/crypto/bytes';
+import {
+  clearIconBadgeAsync,
+  getInboxBackgroundTaskStateAsync,
+  getNotificationPermissionAsync,
+  sendTestNotificationAsync,
+} from '../services/notifications';
 import { useTheme } from '../theme/ThemeProvider';
 import { formatBytes } from '../utils/time';
 
@@ -116,6 +123,13 @@ export default function LabScreen() {
   const [providerResults, setProviderResults] = useState<CheckResult[] | null>(null);
   const [status, setStatus] = useState<Status>({ crypto: 'idle', nostr: 'idle', blossom: 'idle' });
   const [errors, setErrors] = useState<Errors>({});
+  const [notificationInfo, setNotificationInfo] = useState<{
+    permission: boolean;
+    status: string;
+    registered: boolean;
+  } | null>(null);
+  const [notificationBusy, setNotificationBusy] = useState<string | null>(null);
+  const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
   const running = useRef(false);
 
   const runAll = useCallback(async () => {
@@ -150,6 +164,38 @@ export default function LabScreen() {
     void runAll();
   }, [runAll]);
 
+  const refreshNotificationInfo = useCallback(async () => {
+    const [permission, background] = await Promise.all([
+      getNotificationPermissionAsync(),
+      getInboxBackgroundTaskStateAsync(),
+    ]);
+    const statusLabel =
+      background.status === BackgroundTask.BackgroundTaskStatus.Restricted
+        ? 'Restricted'
+        : background.status === BackgroundTask.BackgroundTaskStatus.Available
+          ? 'Available'
+          : 'Unknown';
+    setNotificationInfo({ permission, status: statusLabel, registered: background.registered });
+  }, []);
+
+  useEffect(() => {
+    void refreshNotificationInfo();
+  }, [refreshNotificationInfo]);
+
+  const runNotificationAction = async (key: string, action: () => Promise<string>) => {
+    if (notificationBusy) return;
+    setNotificationBusy(key);
+    setNotificationNotice(null);
+    try {
+      setNotificationNotice(await action());
+    } catch (error) {
+      setNotificationNotice(error instanceof Error ? error.message : 'The action failed');
+    } finally {
+      setNotificationBusy(null);
+      void refreshNotificationInfo();
+    }
+  };
+
   const busy = Object.values(status).some((value) => value === 'running');
 
   return (
@@ -178,6 +224,62 @@ export default function LabScreen() {
             </AppText>
           ))}
         </CheckCard>
+        {__DEV__ ? (
+          <Card>
+            <View style={{ gap: theme.spacing.md }}>
+              <AppText variant="bodyStrong">Notifications</AppText>
+              <AppText variant="caption" color="textSecondary">
+                Permission: {notificationInfo ? (notificationInfo.permission ? 'granted' : 'not granted') : 'checking'}
+                {' · '}Background: {notificationInfo?.status ?? 'checking'}
+                {' · '}Task: {notificationInfo ? (notificationInfo.registered ? 'registered' : 'not registered') : 'checking'}
+              </AppText>
+              {notificationNotice ? (
+                <AppText variant="caption" color="textSecondary" accessibilityLiveRegion="polite">
+                  {notificationNotice}
+                </AppText>
+              ) : null}
+              <Button
+                label="Run background check now"
+                variant="secondary"
+                fullWidth
+                loading={notificationBusy === 'worker'}
+                disabled={Boolean(notificationBusy)}
+                onPress={() =>
+                  void runNotificationAction('worker', async () => {
+                    await BackgroundTask.triggerTaskWorkerForTestingAsync();
+                    return 'Background worker triggered.';
+                  })
+                }
+              />
+              <Button
+                label="Send test notification"
+                variant="secondary"
+                fullWidth
+                loading={notificationBusy === 'test'}
+                disabled={Boolean(notificationBusy)}
+                onPress={() =>
+                  void runNotificationAction('test', async () => {
+                    const scheduled = await sendTestNotificationAsync();
+                    return scheduled ? 'Test notification scheduled.' : 'Notification could not be scheduled.';
+                  })
+                }
+              />
+              <Button
+                label="Clear badge"
+                variant="ghost"
+                fullWidth
+                loading={notificationBusy === 'badge'}
+                disabled={Boolean(notificationBusy)}
+                onPress={() =>
+                  void runNotificationAction('badge', async () => {
+                    await clearIconBadgeAsync();
+                    return 'Icon badge cleared.';
+                  })
+                }
+              />
+            </View>
+          </Card>
+        ) : null}
         <Button label={busy ? 'Running all checks' : 'Run all checks again'} loading={busy} fullWidth onPress={() => void runAll()} />
       </View>
     </ScreenScroll>

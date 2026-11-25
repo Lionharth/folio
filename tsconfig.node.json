@@ -17,6 +17,8 @@
     "scripts/**/*.ts",
     "src/lib/crypto/bytes.ts",
     "src/lib/crypto/chunkedFile.ts",
+    "src/lib/notifications/copy.ts",
+    "src/lib/notifications/routes.ts",
     "src/lib/nostr/dm.ts",
     "src/lib/nostr/relays.ts",
     "src/lib/blossom/auth.ts"

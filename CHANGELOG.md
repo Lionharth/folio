@@ -35,6 +35,17 @@
 
 ### Added
 
+- Device-local notifications for new moments, invitations and membership
+  changes, with grouped per-circle copy, an unread tab badge, an icon badge after
+  background checks, and deep links into the matching vlog, filtered Updates or
+  Circles tab. Delivery is best-effort; there is no remote push service.
+- Best-effort background inbox checks through `expo-background-task` at a
+  minimum 15-minute interval. The worker skips until the foreground backfill is
+  complete, uses the same `refreshInbox` path, and is serialized against
+  foreground syncs with a TTL-based settings lock.
+- Profile → Notifications with a device master switch, separate New moments,
+  Invitations and Membership toggles, per-circle mute controls, honest
+  background-delivery copy and a lock-screen privacy note.
 - Private comments and reactions on vlogs and comments, delivered as encrypted
   NIP-17 control messages. Comments support one-level threads, author edits and
   author deletes; reactions support multiple distinct emoji from a picker plus a

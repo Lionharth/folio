@@ -90,8 +90,9 @@ Migrations use `PRAGMA user_version`; schema version 2 adds
 `vlogs.viewer_pubkey`, version 3 adds `circle_invites`, version 4 adds
 `contact_profiles` and the private name fields on invitations, version 6 scopes
 invitations to a recipient and adds durable membership receipts plus the control
-outbox, version 7 adds encrypted comments, reactions and the inbox cursor, and
-version 8 adds per-relay sync state and the remote-vlog lookup index.
+outbox, version 7 adds encrypted comments, reactions and the inbox cursor,
+version 8 adds per-relay sync state and the remote-vlog lookup index, and version
+9 adds the unread-count index used by the Updates tab badge.
 
 Design choices:
 - Every vlog row belongs to a viewer identity (`viewer_pubkey`). Local ids are
@@ -233,11 +234,45 @@ each chunk natively, and authenticates ordering and framing. See
 
 ## Background work
 
-Not implemented in this build. Uploads run while the app is alive. Expo's
-`expo-background-task` is installed but no task is registered; JavaScript
-execution after Android kills the app is not assumed anywhere. A future build
-must use a native upload worker (Expo Module) and persist resumable state in
-`upload_jobs`.
+Inbox sync runs in a deferrable `expo-background-task` worker
+(`folio-inbox-notifications`) while notifications are enabled, with a minimum
+interval of 15 minutes. The worker reuses `refreshInbox`, skips until the
+foreground backfill has completed, and yields to a foreground sync through the
+`inbox.sync.lock` setting. Android WorkManager and iOS BGTaskScheduler decide
+when it actually runs; force-stopping the app stops it.
+
+Uploads still run only while the app is alive. There is no native upload worker
+and no resumable upload state in `upload_jobs`.
+
+## Notifications
+
+Folio generates local OS notifications after an inbox sync applies a durable
+transition. There is no remote push service, FCM/APNs credential, Expo push
+token or notification-specific relay payload.
+
+- Only the active identity is synced and notified. The background worker reads
+  the active identity on every run.
+- Device-level preferences live in `settings` under `notifications.*`: a master
+  switch plus New moments, Invitations and Membership toggles. Effective
+  notifications require both the master setting and OS permission.
+- Per-circle mute reuses `circles.muted`. It suppresses post notifications for
+  that circle; invitations and membership changes still notify.
+- Events are derived from DB transitions, so repeated syncs do not re-notify.
+  Self-authored moments are filtered defensively.
+- The icon badge shows the unread moment count after a background check and is
+  cleared when the app becomes active. The Updates tab badge reads directly from
+  the unread rows and does not depend on notification permission.
+- Foreground syncs stay silent: the notification handler suppresses banners,
+  list entries and sounds while Updates, the unread count and the tab badge still
+  update.
+- Background runs skip while the foreground holds the sync lock. The lock is a
+  TTL-based JSON value in `settings`, so a killed process cannot deadlock the
+  next launch.
+- Notification content carries only a routing URL. Circle and author names are
+  still visible on the lock screen and in notification history; that trade-off is
+  documented in SECURITY.md.
+- On iOS, a locked keychain can prevent a background run from reading the secret
+  key. The run skips and catches up later.
 
 ## Build mirror (Windows)
 

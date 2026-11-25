@@ -20,8 +20,8 @@ No developer-operated backend. No follower counts. No algorithmic feed.
 | 3 — Circles | Creation, private encrypted invitations, acceptance, invited/active states, roles stored, mute, membership version, removal; no signed multi-owner membership history |
 | 4 — Video creation and sharing | Single-clip publish works end to end; multi-clip data model and sequential player exist; camera UI implemented but not exercised |
 | 5 — Feed and archive | Chronological feed, circle filter, unread, archive search/favourites |
-| 6 — Reactions and comments | Implemented: encrypted vlog/comment reactions, one-level threads, author edit/delete, per-relay social restore, owner removal propagation; no push notifications |
-| 7 — Reliability, notifications, recovery | Partial: recovery key export/import, provider preflight, no push, no background upload |
+| 6 — Reactions and comments | Implemented: encrypted vlog/comment reactions, one-level threads, author edit/delete, per-relay social restore, owner removal propagation; local best-effort notifications, no remote push |
+| 7 — Reliability, notifications, recovery | Partial: recovery key export/import, provider preflight, local best-effort notifications with periodic background inbox checks; no remote push, no background upload |
 
 The README is deliberately blunt: this is an early build. See
 [DEVELOPMENT.md](./DEVELOPMENT.md) for what has and has not been executed on a
@@ -54,9 +54,9 @@ identity B:
   are scoped per identity (`viewer_pubkey`), so A's local copy was not reused.
 
 Comments and reactions now work end to end in the unit and data layers; their
-device-to-device sync still needs physical-device validation. Push
-notifications, resumable background uploads, and encrypted cloud backups are not
-implemented yet.
+device-to-device sync still needs physical-device validation. Local best-effort
+notifications and periodic background inbox checks are implemented; remote push,
+resumable background uploads, and encrypted cloud backups are not.
 
 ## Quick start
 

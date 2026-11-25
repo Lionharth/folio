@@ -313,6 +313,14 @@ advances when the incremental pass completes for every relay, independently of
 backfill progress. Fetched wraps are deduplicated globally by rumor id before
 names, membership, invitation, roster, social and file processing.
 
+## Notifications
+
+Notifications are entirely device-local. Folio does not publish a notification
+event, does not add a relay payload, and does not exchange push tokens. The same
+`kind: 1059` inbox sync that applies moments, invitations and membership
+transitions produces local notification copy after those transitions are durable.
+No new protocol message is introduced.
+
 ## FOLIO-FC1
 
 ```

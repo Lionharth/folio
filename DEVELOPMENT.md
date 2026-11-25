@@ -151,14 +151,18 @@ control round trips, recipient fan-out, and validation. `tests/membership.test.t
 covers participation status, comment-id ownership, operation ordering, body and
 emoji validation, one-level threads and reaction summaries.
 `tests/syncPresentation.test.ts` (5 tests) covers unreachable, partial, empty and
-non-empty inbox presentation. `tests/recoveryCheckpoint.test.ts` (3 tests)
-covers crash-safe and per-identity recovery routing. These are pure Node tests,
-not React Native rendering or device-navigation tests.
+non-empty inbox presentation. `tests/notifications.test.ts` (8 tests) covers
+moment grouping, singular/plural copy, mute filtering, self-author exclusion,
+preference gating, invitation/membership copy, deep-link generation and shared
+route parsing.
+`tests/recoveryCheckpoint.test.ts` (3 tests) covers crash-safe and per-identity
+recovery routing. These are pure Node tests, not React Native rendering or
+device-navigation tests.
 
 ```bash
 npm test
-# tests 63
-# pass 63
+# tests 71
+# pass 71
 # fail 0
 ```
 
@@ -169,12 +173,40 @@ npx tsx scripts/provider-probe.ts --servers https://nostr.download --size 262144
 npx tsx scripts/limits-probe.ts
 ```
 
+## Notification background checks
+
+Local notifications use `expo-notifications` without remote push, and the
+periodic inbox check is registered with `expo-background-task`. Both require a
+rebuilt dev client because the notification plugin config changed.
+
+1. Mirror the source with `npm run build:sync`, then rebuild the dev client from
+   the short-path mirror at `C:\folio` (`npx expo run:android`, or the Gradle
+   command in the Windows section).
+2. Open Profile → Notifications, enable the master switch, and grant the Android
+   13 permission prompt.
+3. In Profile → Advanced → Protocol lab → Notifications:
+   - "Send test notification" schedules a local notification with a `/updates`
+     URL. Background the app to see the banner; tapping should open Updates.
+   - "Run background check now" calls
+     `BackgroundTask.triggerTaskWorkerForTestingAsync()` and refreshes the shown
+     status/registration. Inspect the scheduled job with
+     `adb shell dumpsys jobscheduler | grep -A 40 -m 1 life.folio.app`.
+   - "Clear badge" calls `setBadgeCountAsync(0)`.
+4. A foreground sync or refresh must not show a banner.
+5. Mute a circle, then repeat a post check: post notifications stay silent while
+   invitations and membership changes still notify.
+
+The test trigger only works in debug builds. iOS background execution is
+unavailable without a macOS host.
+
 ## Not yet verified
 
 - Physical Android device (camera, thermal, battery, real network switching).
 - Comment/reaction delivery, edits, deletes and paginated social restore on
   physical devices; only unit-level validation is complete.
-- Push notification delivery (not implemented).
+- Local notification display, tap routing, icon badge behavior and background
+  task execution on a physical device.
+- Remote push (not implemented).
 - Background upload after process death (not implemented).
 - Android Auto Backup and cross-device recovery of media keys (recovery key
   export is implemented; media-key backup is not).

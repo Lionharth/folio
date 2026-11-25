@@ -203,6 +203,19 @@ export default function ProfileScreen() {
         </View>
       </Card>
 
+      <SectionHeader title="Notifications" />
+      <Card padded={false}>
+        <View style={{ paddingHorizontal: theme.spacing.lg }}>
+          <ListRow
+            title="Notifications"
+            subtitle="New moments, invitations, muted circles"
+            right={<Feather name="chevron-right" size={18} color={theme.colors.textTertiary} />}
+            onPress={() => router.push('/notifications')}
+            showDivider={false}
+          />
+        </View>
+      </Card>
+
       <SectionHeader title="Advanced" />
       <Card padded={false}>
         <View style={{ paddingHorizontal: theme.spacing.lg }}>
@@ -216,7 +229,7 @@ export default function ProfileScreen() {
         </View>
         <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: theme.spacing.lg, gap: theme.spacing.md }}>
           <AppText variant="bodyStrong">Sync</AppText>
-          <AppText variant="caption" color="textSecondary">Checks on open and refresh. Push and background uploads are not available.</AppText>
+          <AppText variant="caption" color="textSecondary">Checks on open and refresh, plus best-effort background checks when notifications are enabled. Remote push and background uploads are not available.</AppText>
           <Divider />
           <AppText variant="bodyStrong">Relays</AppText>
           <AppText variant="mono" color="textTertiary" selectable>{DEFAULT_RELAY_LIST.join('\n')}</AppText>

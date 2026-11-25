@@ -1,6 +1,6 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { FlatList, RefreshControl, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import Feather from '@expo/vector-icons/Feather';
 
@@ -35,7 +35,11 @@ export default function UpdatesScreen() {
   const theme = useTheme();
   const queryClient = useQueryClient();
   const identity = useSession((state) => state.identity);
-  const [circleFilter, setCircleFilter] = React.useState<string | null>(null);
+  const params = useLocalSearchParams<{ circleId?: string | string[] }>();
+  const paramCircleId =
+    typeof params.circleId === 'string' && params.circleId.length > 0 ? params.circleId : null;
+  const [circleFilter, setCircleFilter] = React.useState<string | null>(paramCircleId);
+  const appliedParam = useRef<string | null>(paramCircleId);
   const syncInbox = useInboxSync((state) => state.sync);
   const syncing = useInboxSync((state) => state.syncing && state.identityId === identity?.id);
   const restoring = useInboxSync((state) => state.restoring && state.identityId === identity?.id);
@@ -76,6 +80,20 @@ export default function UpdatesScreen() {
     for (const circle of circlesQuery.data ?? []) map.set(circle.id, circle.name);
     return map;
   }, [circlesQuery.data]);
+
+  useEffect(() => {
+    if (!paramCircleId || paramCircleId === appliedParam.current) return;
+    appliedParam.current = paramCircleId;
+    setCircleFilter(paramCircleId);
+  }, [paramCircleId]);
+
+  const selectCircle = (id: string | null) => {
+    setCircleFilter(id);
+    appliedParam.current = id;
+    if (paramCircleId && paramCircleId !== id) {
+      router.setParams({ circleId: id ?? undefined });
+    }
+  };
 
   const sync = useCallback(async () => {
     if (identity) await syncInbox(identity, queryClient);
@@ -168,7 +186,7 @@ export default function UpdatesScreen() {
       <EmptyState
         title={circleFilter ? 'Nothing new here' : 'No moments yet'}
         actionLabel={circleFilter ? 'Show all' : 'Create a moment'}
-        onAction={() => (circleFilter ? setCircleFilter(null) : router.push('/create'))}
+        onAction={() => (circleFilter ? selectCircle(null) : router.push('/create'))}
       />
     );
   };
@@ -229,7 +247,7 @@ export default function UpdatesScreen() {
                   data={[{ id: null as string | null, name: 'All circles' }, ...circles]}
                   keyExtractor={(circle) => circle.id ?? 'all'}
                   renderItem={({ item: circle }) => (
-                    <FilterChip label={circle.name} active={circleFilter === circle.id} onPress={() => setCircleFilter(circle.id)} />
+                    <FilterChip label={circle.name} active={circleFilter === circle.id} onPress={() => selectCircle(circle.id)} />
                   )}
                 />
               </View>

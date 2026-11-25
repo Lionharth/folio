@@ -20,6 +20,7 @@ import {
   markCircleMemberActive,
   upsertVlog,
 } from '../lib/database/vlogs';
+import type { InboxNotificationEvents } from '../lib/notifications/copy';
 import {
   type CircleInvitePayload,
   type CircleMembershipPayload,
@@ -61,6 +62,7 @@ export interface InboxRefreshResult {
   anyRelaySucceeded: boolean;
   allRelaysComplete: boolean;
   completedAt: number;
+  events: InboxNotificationEvents;
 }
 
 interface CollectedInbox {
@@ -313,15 +315,35 @@ async function applyCircleSnapshot(snapshot: CircleInvitePayload['circle'], self
 
 export async function refreshInbox(
   secretKey: Uint8Array,
-  relays: string[] = DEFAULT_DM_RELAYS
+  relays: string[] = DEFAULT_DM_RELAYS,
+  options: { collectEvents?: boolean } = {}
 ): Promise<InboxRefreshResult> {
   const pubkey = getPublicKey(secretKey);
+  const collectEvents = options.collectEvents === true;
   const syncStartedAt = Math.floor(Date.now() / 1000);
   const pool = createPool({ secretKey });
   try {
     const state = await getInboxState(pubkey);
     const relayStates = await listRelayStates(pubkey, relays);
     const collected: CollectedInbox = { files: new Map(), controls: new Map() };
+    const events: InboxNotificationEvents = { moments: [], invites: [], membership: [] };
+    const circleNames = new Map<string, string | null>();
+    const activeMembers = new Map<string, boolean>();
+    const resolveCircleName = async (circleId: string): Promise<string | null> => {
+      if (circleNames.has(circleId)) return circleNames.get(circleId) ?? null;
+      const circle = await getCircle(circleId);
+      circleNames.set(circleId, circle?.name ?? null);
+      return circle?.name ?? null;
+    };
+    const isActiveMember = async (circleId: string, memberPubkey: string): Promise<boolean> => {
+      const key = `${circleId}:${memberPubkey}`;
+      const cached = activeMembers.get(key);
+      if (cached !== undefined) return cached;
+      const member = await getCircleMember(circleId, memberPubkey);
+      const active = member?.status === 'active';
+      activeMembers.set(key, active);
+      return active;
+    };
     const backfillStates = new Map<string, RelayWindowCursor>();
     const incrementalStates = new Map<string, RelayWindowCursor>();
     for (const [relay, relayState] of relayStates) {
@@ -416,8 +438,22 @@ export async function refreshInbox(
         });
         if (result?.created) restored += 1;
       } else {
+        const removedByOwner =
+          collectEvents && candidate.source === 'removed' && payload.action === 'removed';
+        const name = removedByOwner
+          ? payload.circle?.name ?? (await resolveCircleName(payload.circleId))
+          : null;
         await suppressCircleFromReceipt({ payload, selfPubkey: pubkey });
         suppressed += 1;
+        if (removedByOwner) {
+          events.membership.push({
+            circleId: payload.circleId,
+            circleName: name ?? '',
+            kind: 'removed',
+            memberPubkey: payload.memberPubkey,
+            memberName: null,
+          });
+        }
       }
     }
 
@@ -428,8 +464,18 @@ export async function refreshInbox(
         if (control.payload.memberPubkey !== control.senderPubkey) continue;
         const circle = await getCircle(control.payload.circleId);
         if (!circle || circle.ownerPubkey !== pubkey) continue;
+        circleNames.set(circle.id, circle.name);
         if (await markCircleMemberActive(circle.id, control.payload.memberPubkey)) {
           accepted += 1;
+          if (collectEvents) {
+            events.membership.push({
+              circleId: circle.id,
+              circleName: circle.name,
+              kind: 'accepted',
+              memberPubkey: control.payload.memberPubkey,
+              memberName: control.payload.memberName ?? null,
+            });
+          }
         }
         continue;
       }
@@ -463,7 +509,19 @@ export async function refreshInbox(
       });
 
       if (outcome === 'pending') {
-        if (stored.created) invites += 1;
+        if (stored.created) {
+          invites += 1;
+          if (collectEvents) {
+            circleNames.set(circle.id, circle.name);
+            events.invites.push({
+              inviteId: stored.invite.id,
+              circleId: circle.id,
+              circleName: circle.name,
+              ownerPubkey: circle.ownerPubkey,
+              ownerName: circle.ownerName ?? null,
+            });
+          }
+        }
         continue;
       }
 
@@ -540,6 +598,19 @@ export async function refreshInbox(
       }
       await upsertVlog(vlog, [clip]);
       added += 1;
+      if (collectEvents) {
+        const circleId = message.payload.circleId;
+        const senderActive = await isActiveMember(circleId, message.senderPubkey);
+        const viewerActive = await isActiveMember(circleId, pubkey);
+        if (senderActive && viewerActive) {
+          events.moments.push({
+            vlogId: vlog.id,
+            circleId,
+            circleName: await resolveCircleName(circleId),
+            authorPubkey: message.senderPubkey,
+          });
+        }
+      }
     }
 
     await seedMembershipReceipts(secretKey, pool);
@@ -588,6 +659,7 @@ export async function refreshInbox(
       anyRelaySucceeded: anyOk,
       allRelaysComplete: anyOk && backfillComplete && incrementalComplete,
       completedAt: Date.now(),
+      events,
     };
   } finally {
     pool.destroy();

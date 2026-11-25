@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query';
 import { create } from 'zustand';
 
+import { acquireSyncLock } from '../lib/database/syncLock';
 import { readSecretKey, type StoredIdentity } from '../lib/nostr/identity';
 import { invalidateAfterInbox } from '../lib/queryKeys';
 import { refreshInbox, type InboxRefreshResult } from '../services/inbox';
@@ -34,6 +35,7 @@ export const useInboxSync = create<InboxSyncState>((set, get) => {
   ): Promise<InboxRefreshResult | null> => {
     const current = get();
     if (current.syncing && current.identityId === identity.id) return current.lastResult;
+    const previous = current.lastResult;
 
     const request = ++requestSequence;
     attempted.add(identity.id);
@@ -48,21 +50,39 @@ export const useInboxSync = create<InboxSyncState>((set, get) => {
     });
 
     try {
-      const secretKey = await readSecretKey(identity.id);
-      const result = await refreshInbox(secretKey);
-      if (result.anyRelaySucceeded) restoreRequested.delete(identity.id);
-      else attempted.delete(identity.id);
-      await invalidateAfterInbox(queryClient, identity.pubkey);
-      if (request === requestSequence && get().identityId === identity.id) {
-        set({
-          syncing: false,
-          restoring: false,
-          lastResult: result,
-          error: null,
-          retryRequired: !result.anyRelaySucceeded,
-        });
+      const lock = await acquireSyncLock(20_000);
+      if (!lock) {
+        attempted.delete(identity.id);
+        if (request === requestSequence && get().identityId === identity.id) {
+          set({
+            syncing: false,
+            restoring: false,
+            lastResult: previous,
+            error: null,
+            retryRequired: false,
+          });
+        }
+        return previous;
       }
-      return result;
+      try {
+        const secretKey = await readSecretKey(identity.id);
+        const result = await refreshInbox(secretKey);
+        if (result.anyRelaySucceeded) restoreRequested.delete(identity.id);
+        else attempted.delete(identity.id);
+        await invalidateAfterInbox(queryClient, identity.pubkey);
+        if (request === requestSequence && get().identityId === identity.id) {
+          set({
+            syncing: false,
+            restoring: false,
+            lastResult: result,
+            error: null,
+            retryRequired: !result.anyRelaySucceeded,
+          });
+        }
+        return result;
+      } finally {
+        await lock.release();
+      }
     } catch (error) {
       attempted.delete(identity.id);
       if (request === requestSequence && get().identityId === identity.id) {

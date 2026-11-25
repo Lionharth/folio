@@ -42,6 +42,7 @@ function patchCacheValue(value: unknown, vlogId: string): unknown {
 export function syncVlogReadCaches(queryClient: QueryClient, viewerPubkey: string, vlogId: string): void {
   const root = queryKeys.vlogs(viewerPubkey);
   queryClient.setQueriesData<unknown>({ queryKey: root }, (value: unknown) => patchCacheValue(value, vlogId));
+  void queryClient.invalidateQueries({ queryKey: queryKeys.unread(viewerPubkey) });
   for (const query of queryClient.getQueryCache().findAll({ queryKey: root })) {
     if (query.queryKey.includes('updates')) {
       void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true });
