@@ -10,7 +10,6 @@
     "backgroundColor": "#F8F7F4",
     "newArchEnabled": true,
     "ios": {
-      "icon": "./assets/expo.icon",
       "supportsTablet": false,
       "bundleIdentifier": "life.folio.app",
       "infoPlist": {
@@ -24,7 +23,6 @@
       "adaptiveIcon": {
         "backgroundColor": "#171717",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": true
@@ -39,10 +37,15 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#F8F7F4",
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 96,
+          "image": "./assets/images/splash-wordmark.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
           "dark": {
-            "backgroundColor": "#111111"
+            "backgroundColor": "#111111",
+            "image": "./assets/images/splash-wordmark-dark.png"
+          },
+          "android": {
+            "imageWidth": 160
           }
         }
       ],

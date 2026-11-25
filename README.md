@@ -89,8 +89,11 @@ metadata replace generic feed rows. Updates is a finite unread inbox; Archive is
 the complete chronological history. Four tabs (Updates, Circles, Archive,
 Profile) surround a central full-screen Create action.
 
-The launcher icon is the serif "f" generated from the bundled font
-(`assets/images/icon.png`). Warm paper, ink-black primary, no decorative accent
+The launcher icon is the serif "f" (`assets/images/icon.png`); the Android
+adaptive foreground and monochrome layers are derived from it. The splash screen
+shows the serif lowercase `folio` wordmark in light and dark variants
+(`assets/images/splash-wordmark*.png`). Regenerate these assets with
+`npm run brand:assets`. Warm paper, ink-black primary, no decorative accent
 colours, 24 dp margins and a 4 dp spacing scale. Light and dark themes are
 designed separately, while the layered video viewer deliberately uses an
 always-dark cinema surface in both. Player/sheet motion has reduced-motion

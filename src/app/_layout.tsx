@@ -35,6 +35,7 @@ import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
 import { useSession } from '../stores/session';
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
+SplashScreen.setOptions({ duration: 300, fade: true });
 
 const queryClient = new QueryClient({
   defaultOptions: {

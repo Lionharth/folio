@@ -40,6 +40,10 @@ gradlew -p C:\folio\android app:assembleRelease -x lint -x test \
 Always use `npx expo install <pkg>` for native packages so versions match SDK 58.
 `ios/` and `android/` are generated; do not hand-edit them.
 
+Launcher icon and splash changes require `npm run brand:assets`, a fresh
+prebuild, and a standalone/preview build to verify; Expo Go and the development
+client show their own splash screens.
+
 ## Windows and OneDrive
 
 This repository's primary path is inside OneDrive:

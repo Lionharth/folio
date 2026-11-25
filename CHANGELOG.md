@@ -4,6 +4,9 @@
 
 ### Changed
 
+- The iOS app icon no longer uses the Expo Icon Composer bundle; the serif `f`
+  launcher icon now applies on both platforms, and the Android adaptive icon
+  uses a paper glyph on ink with a proper monochrome layer.
 - Cinematic editorial redesign across every user-facing screen: large media
   covers, stronger serif hierarchy, readable secondary text, 48 dp controls,
   layout-matched loading states, contextual errors, and reduced-motion support.
@@ -35,6 +38,8 @@
 
 ### Added
 
+- A branded splash screen with the serif lowercase `folio` wordmark in light and
+  dark variants, plus a short fade into the first screen.
 - Device-local notifications for new moments, invitations and membership
   changes, with grouped per-circle copy, an unread tab badge, an icon badge after
   background checks, and deep links into the matching vlog, filtered Updates or
