@@ -2,47 +2,69 @@ import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, Pressable, RefreshControl, View } from 'react-native';
 import { router } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Image } from 'expo-image';
 import Feather from '@expo/vector-icons/Feather';
 
 import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
-import { EmptyState, ErrorState, LoadingState } from '../../components/ui/States';
-import { PageHeader } from '../../components/ui/Layout';
+import { IconButton } from '../../components/ui/IconButton';
+import { PageHeader, SectionHeader } from '../../components/ui/Layout';
+import { InlineNotice } from '../../components/ui/Notice';
 import { Screen } from '../../components/ui/Screen';
+import { EmptyState, ErrorState, LoadingState } from '../../components/ui/States';
 import { listPendingInvites, type CircleInvite } from '../../lib/database/invites';
-import { listCircleMembers, listCirclesForViewer } from '../../lib/database/vlogs';
+import { listCircleMembers, listCirclesForViewer, listVlogs } from '../../lib/database/vlogs';
 import { readSecretKey } from '../../lib/nostr/identity';
 import { shortNpub } from '../../lib/nostr/format';
+import { invalidateCircles, invalidateSocial, invalidateVlogs, queryKeys } from '../../lib/queryKeys';
 import { acceptInvite, declineInvite } from '../../services/circles';
-import { refreshInbox } from '../../services/inbox';
+import { presentInboxSync, type SyncTone } from '../../services/syncPresentation';
+import { useInboxSync } from '../../stores/inboxSync';
 import { useSession } from '../../stores/session';
 import { useTheme } from '../../theme/ThemeProvider';
+import { useNetworkStatus } from '../../hooks/useNetworkStatus';
+import type { Vlog } from '../../types/models';
+
+type CircleWithDetails = Awaited<ReturnType<typeof listCirclesForViewer>>[number] & {
+  members: Awaited<ReturnType<typeof listCircleMembers>>;
+  recent: Vlog | null;
+};
 
 export default function CirclesScreen() {
   const theme = useTheme();
   const queryClient = useQueryClient();
   const identity = useSession((state) => state.identity);
-  const [syncing, setSyncing] = useState(false);
   const [handlingInviteId, setHandlingInviteId] = useState<string | null>(null);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ message: string; tone: SyncTone } | null>(null);
+  const syncInbox = useInboxSync((state) => state.sync);
+  const syncing = useInboxSync((state) => state.syncing && state.identityId === identity?.id);
+  const restoring = useInboxSync((state) => state.restoring && state.identityId === identity?.id);
+  const syncIdentityId = useInboxSync((state) => state.identityId);
+  const lastResult = useInboxSync((state) => state.lastResult);
+  const lastAction = useInboxSync((state) => state.lastAction);
+  const syncError = useInboxSync((state) => state.error);
+  const { offline } = useNetworkStatus();
 
   const circlesQuery = useQuery({
-    queryKey: ['circles-with-members', identity?.pubkey],
+    queryKey: queryKeys.circlesWithMembers(identity?.pubkey),
     queryFn: async () => {
       const circles = await listCirclesForViewer(identity!.pubkey);
       return Promise.all(
-        circles.map(async (circle) => ({
-          ...circle,
-          members: await listCircleMembers(circle.id),
-        }))
+        circles.map(async (circle) => {
+          const [members, recent] = await Promise.all([
+            listCircleMembers(circle.id),
+            listVlogs(identity!.pubkey, { circleId: circle.id, limit: 1 }),
+          ]);
+          return { ...circle, members, recent: recent[0] ?? null };
+        })
       );
     },
     enabled: Boolean(identity),
   });
 
   const invitesQuery = useQuery({
-    queryKey: ['circle-invites', identity?.pubkey],
+    queryKey: queryKeys.invites(identity?.pubkey),
     queryFn: () => listPendingInvites(identity!.pubkey),
     enabled: Boolean(identity),
   });
@@ -51,54 +73,32 @@ export default function CirclesScreen() {
   const invites = invitesQuery.data ?? [];
 
   const invalidateAll = useCallback(async () => {
+    if (!identity) return;
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['circle-invites'] }),
-      queryClient.invalidateQueries({ queryKey: ['circles-with-members'] }),
-      queryClient.invalidateQueries({ queryKey: ['circles'] }),
-      queryClient.invalidateQueries({ queryKey: ['circle'] }),
-      queryClient.invalidateQueries({ queryKey: ['circle-member'] }),
-      queryClient.invalidateQueries({ queryKey: ['comments'] }),
-      queryClient.invalidateQueries({ queryKey: ['reactions'] }),
-      queryClient.invalidateQueries({ queryKey: ['comment-reactions'] }),
+      invalidateCircles(queryClient, identity.pubkey),
+      invalidateVlogs(queryClient, identity.pubkey),
+      invalidateSocial(queryClient, identity.pubkey),
     ]);
-  }, [queryClient]);
+  }, [queryClient, identity]);
 
   const sync = useCallback(async () => {
-    if (!identity || syncing) return;
-    setSyncing(true);
-    setSyncMessage(null);
-    try {
-      const secretKey = await readSecretKey(identity.id);
-      const result = await refreshInbox(secretKey);
-      await invalidateAll();
-      if (result.restored > 0) {
-        setSyncMessage(`${result.restored} circle${result.restored === 1 ? '' : 's'} restored`);
-      } else if (result.invites > 0) setSyncMessage(`${result.invites} invitation${result.invites === 1 ? '' : 's'} found`);
-      else if (result.accepted > 0) setSyncMessage('Membership updated');
-      else setSyncMessage('No new invitations');
-    } catch (error) {
-      setSyncMessage(null);
-      Alert.alert('Could not sync', error instanceof Error ? error.message : 'Your relays did not respond');
-    } finally {
-      setSyncing(false);
-    }
-  }, [identity, syncing, invalidateAll]);
+    if (identity) await syncInbox(identity, queryClient);
+  }, [identity, syncInbox, queryClient]);
 
   const accept = async (invite: CircleInvite) => {
     if (!identity) return;
     setHandlingInviteId(invite.id);
+    setNotice(null);
     try {
       const secretKey = await readSecretKey(identity.id);
       const result = await acceptInvite({ secretKey, inviteId: invite.id, memberName: identity.label });
       await invalidateAll();
-      Alert.alert(
-        `Joined ${result.circleName}`,
-        result.ownerNotified
-          ? 'The owner has been notified. New posts will arrive in Updates.'
-          : 'The circle was added on this device. The owner will see you after their next sync.'
-      );
+      setNotice({
+        message: result.ownerNotified ? `Joined ${result.circleName}` : `Joined ${result.circleName} · owner not notified`,
+        tone: result.ownerNotified ? 'success' : 'warning',
+      });
     } catch (error) {
-      Alert.alert('Could not accept', error instanceof Error ? error.message : 'Unknown error');
+      setNotice({ message: error instanceof Error ? error.message : 'Could not accept the invitation', tone: 'error' });
     } finally {
       setHandlingInviteId(null);
     }
@@ -106,183 +106,180 @@ export default function CirclesScreen() {
 
   const decline = (invite: CircleInvite) => {
     Alert.alert('Decline invitation?', `You will not join ${invite.name}.`, [
-      { text: 'Keep', style: 'cancel' },
+      { text: 'Keep invitation', style: 'cancel' },
       {
         text: 'Decline',
         style: 'destructive',
         onPress: async () => {
           if (!identity) return;
+          setHandlingInviteId(invite.id);
           try {
             const secretKey = await readSecretKey(identity.id);
             await declineInvite({ secretKey, inviteId: invite.id });
             await invalidateAll();
+            setNotice({ message: `Declined ${invite.name}`, tone: 'neutral' });
           } catch (error) {
-            Alert.alert('Could not decline', error instanceof Error ? error.message : 'Unknown error');
+            setNotice({ message: error instanceof Error ? error.message : 'Could not decline', tone: 'error' });
+          } finally {
+            setHandlingInviteId(null);
           }
         },
       },
     ]);
   };
 
-  const header = (
-    <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
-      <PageHeader
-        title="Circles"
-        subtitle={syncMessage ?? 'Private groups of friends'}
-        right={
-          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <Pressable
-              onPress={() => router.push('/circle/new')}
-              accessibilityRole="button"
-              accessibilityLabel="Create a circle"
-              style={{
-                width: theme.layout.minTouchTarget,
-                height: theme.layout.minTouchTarget,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Feather name="plus" size={22} color={theme.colors.textPrimary} />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                sync().catch(() => undefined);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="Check for invitations"
-              style={{
-                width: theme.layout.minTouchTarget,
-                height: theme.layout.minTouchTarget,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Feather name={syncing ? 'loader' : 'refresh-cw'} size={20} color={theme.colors.textSecondary} />
-            </Pressable>
-          </View>
-        }
-      />
-
-      {invites.length > 0 ? (
-        <View style={{ marginBottom: theme.spacing.lg, gap: theme.spacing.sm }}>
-          <AppText variant="label" color="textSecondary">
-            INVITATIONS
-          </AppText>
-          {invites.map((invite) => (
-            <Card key={invite.id}>
-              <View style={{ gap: theme.spacing.sm }}>
-                <AppText variant="vlogTitle">{invite.name}</AppText>
-                <AppText variant="caption" color="textSecondary">
-                  From {invite.ownerName ?? shortNpub(invite.ownerPubkey)} · {invite.members.length}{' '}
-                  {invite.members.length === 1 ? 'member' : 'members'}
-                </AppText>
-                {invite.description ? (
-                  <AppText variant="caption" color="textTertiary">
-                    {invite.description}
-                  </AppText>
-                ) : null}
-                <View style={{ flexDirection: 'row', gap: theme.spacing.md, marginTop: theme.spacing.xs }}>
-                  <Button
-                    label="Accept"
-                    loading={handlingInviteId === invite.id}
-                    onPress={() => {
-                      accept(invite).catch(() => undefined);
-                    }}
-                  />
-                  <Button label="Decline" variant="ghost" onPress={() => decline(invite)} />
-                </View>
-              </View>
-            </Card>
-          ))}
-        </View>
-      ) : null}
-    </View>
-  );
+  const syncPresentation =
+    syncIdentityId === identity?.id && lastResult && (lastAction === 'manual' || !lastResult.allRelaysComplete)
+      ? presentInboxSync(lastResult, 'circles')
+      : null;
+  const currentSyncError = syncIdentityId === identity?.id ? syncError : null;
 
   return (
     <Screen padded={false} edges={['top', 'left', 'right']}>
-      <FlatList
+      <FlatList<CircleWithDetails>
         data={circles}
         keyExtractor={(item) => item.id}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
             refreshing={syncing}
-            onRefresh={() => {
-              sync().catch(() => undefined);
-            }}
+            onRefresh={() => void sync()}
             tintColor={theme.colors.textSecondary}
             colors={[theme.colors.textPrimary]}
             progressBackgroundColor={theme.colors.surface}
           />
         }
-        ListHeaderComponent={header}
-        renderItem={({ item }) => (
-          <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
-            <Pressable
-              onPress={() => router.push({ pathname: '/circle/[id]', params: { id: item.id } })}
-              accessibilityRole="button"
-              style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1 })}
-            >
-              <View
-                style={{
-                  paddingVertical: theme.spacing.xl,
-                  borderBottomWidth: 1,
-                  borderBottomColor: theme.colors.border,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: theme.spacing.md,
-                }}
-              >
-                <View
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: theme.radius.md,
-                    backgroundColor: theme.colors.surfaceSubtle,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Feather name="users" size={18} color={theme.colors.textSecondary} />
+        ListHeaderComponent={
+          <View>
+            <PageHeader
+              title="Circles"
+              right={
+                <View style={{ flexDirection: 'row' }}>
+                  <IconButton icon="plus" label="Create a circle" onPress={() => router.push('/circle/new')} />
+                  <IconButton icon="refresh-cw" label="Check for invitations" loading={syncing} onPress={() => void sync()} />
                 </View>
-                <View style={{ flex: 1, gap: 2 }}>
-                  <AppText variant="vlogTitle">{item.name}</AppText>
-                  <AppText variant="caption" color="textSecondary">
-                    {item.members.length} {item.members.length === 1 ? 'member' : 'members'}
-                    {item.description ? `  ·  ${item.description}` : ''}
-                  </AppText>
+              }
+            />
+            {offline ? <InlineNotice message="Offline · changes wait for a connection" tone="warning" /> : null}
+            {currentSyncError ? <InlineNotice message="Couldn’t refresh" tone="error" /> : null}
+            {notice ? <InlineNotice message={notice.message} tone={notice.tone} /> : null}
+            {!notice && !currentSyncError && syncPresentation ? (
+              <InlineNotice message={syncPresentation.message} tone={syncPresentation.tone} />
+            ) : null}
+            {invitesQuery.isLoading ? <LoadingState label="Checking invitations" /> : null}
+            {invitesQuery.isError ? <ErrorState title="Couldn’t open invitations" onAction={() => invitesQuery.refetch()} /> : null}
+            {invites.length > 0 ? (
+              <View style={{ marginBottom: theme.spacing.xl }}>
+                <SectionHeader title="Invitations" />
+                <View style={{ gap: theme.spacing.md }}>
+                  {invites.map((invite) => (
+                    <Card key={invite.id} style={{ borderColor: theme.colors.borderStrong }}>
+                      <View style={{ gap: theme.spacing.sm }}>
+                        <AppText variant="headline">{invite.name}</AppText>
+                        <AppText variant="caption" color="textSecondary">
+                          From {invite.ownerName ?? shortNpub(invite.ownerPubkey)} · {invite.members.length}{' '}
+                          {invite.members.length === 1 ? 'member' : 'members'}
+                        </AppText>
+                        {invite.description ? <AppText variant="body" color="textSecondary">{invite.description}</AppText> : null}
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md, marginTop: theme.spacing.sm }}>
+                          <Button
+                            label="Join"
+                            accessibilityLabel={`Accept invitation to ${invite.name}`}
+                            loading={handlingInviteId === invite.id}
+                            disabled={Boolean(handlingInviteId)}
+                            onPress={() => void accept(invite)}
+                          />
+                          <Button
+                            label="Decline"
+                            variant="ghost"
+                            disabled={Boolean(handlingInviteId)}
+                            onPress={() => decline(invite)}
+                          />
+                        </View>
+                      </View>
+                    </Card>
+                  ))}
                 </View>
-                {item.muted ? <Feather name="bell-off" size={16} color={theme.colors.textTertiary} /> : null}
-                <Feather name="chevron-right" size={18} color={theme.colors.textTertiary} />
               </View>
-            </Pressable>
+            ) : null}
+            {circles.length > 0 && invites.length > 0 ? <SectionHeader title="Your circles" /> : null}
           </View>
+        }
+        renderItem={({ item }) => (
+          <CircleCard circle={item} onPress={() => router.push({ pathname: '/circle/[id]', params: { id: item.id } })} />
         )}
         ListEmptyComponent={
           circlesQuery.isLoading ? (
-            <LoadingState label="Gathering your circles" />
+            <LoadingState label="Opening circles" />
           ) : circlesQuery.isError ? (
-            <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
-              <ErrorState
-                message={circlesQuery.error instanceof Error ? circlesQuery.error.message : undefined}
-                onAction={() => circlesQuery.refetch()}
-              />
-            </View>
-          ) : invites.length > 0 ? (
-            <View />
-          ) : (
-            <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
-              <EmptyState
-                title="A circle is a small, private room"
-                description="Invite the people you actually want to share everyday life with. Videos stay encrypted and only members can open them."
-                actionLabel="Create your first circle"
-                onAction={() => router.push('/circle/new')}
-              />
-            </View>
+            <ErrorState title="Couldn’t open circles" onAction={() => circlesQuery.refetch()} />
+          ) : restoring ? (
+            <LoadingState label="Restoring circles" />
+          ) : invites.length > 0 || invitesQuery.isLoading || invitesQuery.isError ? undefined : (
+            <EmptyState
+              title="Start a circle"
+              description="Only invited people can see it."
+              actionLabel="Create circle"
+              onAction={() => router.push('/circle/new')}
+            />
           )
         }
-        contentContainerStyle={{ paddingBottom: theme.spacing.huge }}
+        contentContainerStyle={{
+          paddingHorizontal: theme.layout.screenMargin,
+          paddingBottom: theme.spacing.huge,
+          flexGrow: 1,
+        }}
       />
     </Screen>
+  );
+}
+
+function CircleCard({ circle, onPress }: { circle: CircleWithDetails; onPress: () => void }) {
+  const theme = useTheme();
+  const artwork = circle.coverUri ?? circle.recent?.coverUri ?? null;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${circle.name}. ${circle.members.length} ${circle.members.length === 1 ? 'member' : 'members'}${circle.muted ? '. Notification preference muted' : ''}`}
+      style={({ pressed }) => ({
+        marginBottom: theme.spacing.xxl,
+        opacity: pressed ? 0.86 : 1,
+        transform: [{ scale: pressed ? 0.992 : 1 }],
+      })}
+    >
+      <View
+        style={{
+          height: 180,
+          borderRadius: theme.radius.xl,
+          overflow: 'hidden',
+          backgroundColor: theme.colors.surfaceSubtle,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: 1,
+          borderColor: theme.colors.border,
+        }}
+      >
+        {artwork ? (
+          <Image source={{ uri: artwork }} contentFit="cover" transition={180} style={{ width: '100%', height: '100%' }} />
+        ) : (
+          <AppText style={{ fontFamily: theme.font.serifLight, fontSize: 88, lineHeight: 96, color: theme.colors.textSecondary }}>
+            {circle.name.trim().charAt(0).toLowerCase() || 'f'}
+          </AppText>
+        )}
+        <View style={{ position: 'absolute', right: theme.spacing.md, bottom: theme.spacing.md, backgroundColor: 'rgba(0,0,0,0.68)', borderRadius: theme.radius.pill, padding: theme.spacing.sm }}>
+          <Feather name="arrow-up-right" size={18} color="#FFFFFF" />
+        </View>
+      </View>
+      <View style={{ paddingTop: theme.spacing.md, gap: theme.spacing.xs }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
+          <AppText variant="vlogTitle" style={{ flex: 1 }}>{circle.name}</AppText>
+          {circle.muted ? <Feather name="bell-off" size={16} color={theme.colors.textTertiary} /> : null}
+        </View>
+        <AppText variant="caption" color="textSecondary">
+          {circle.members.length} {circle.members.length === 1 ? 'member' : 'members'}
+        </AppText>
+      </View>
+    </Pressable>
   );
 }

@@ -3,6 +3,11 @@
 Folio speaks Nostr for events and Blossom for blobs. This file records exactly
 what is implemented, what is extended, and what is intentionally not used.
 
+The cinematic editorial UI redesign does not change any event, payload,
+container, key-delivery or storage format. `InboxRefreshResult` additionally
+exposes `anyRelaySucceeded`, `allRelaysComplete` and `completedAt` for local UI
+status. These are derived completion facts, not wire-protocol fields.
+
 ## Implemented
 
 | Spec | Use | Notes |

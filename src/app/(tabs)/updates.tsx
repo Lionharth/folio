@@ -1,39 +1,73 @@
-import React, { useCallback, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, RefreshControl, View } from 'react-native';
+import React, { useCallback, useMemo } from 'react';
+import { FlatList, RefreshControl, View } from 'react-native';
 import { router } from 'expo-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import Feather from '@expo/vector-icons/Feather';
 
 import { AppText } from '../../components/ui/AppText';
-import { EmptyState, ErrorState } from '../../components/ui/States';
+import { Button } from '../../components/ui/Button';
+import { FilterChip } from '../../components/ui/FilterChip';
+import { IconButton } from '../../components/ui/IconButton';
 import { PageHeader } from '../../components/ui/Layout';
+import { InlineNotice } from '../../components/ui/Notice';
 import { Screen } from '../../components/ui/Screen';
+import { EmptyState, ErrorState, LoadingState, VlogListSkeleton } from '../../components/ui/States';
 import { VlogRow } from '../../components/vlog/VlogRow';
-import { listCirclesForViewer, listVlogs } from '../../lib/database/vlogs';
 import { listContactNames } from '../../lib/database/contacts';
+import { listCirclesForViewer, listVlogs } from '../../lib/database/vlogs';
 import { shortNpub } from '../../lib/nostr/format';
-import { readSecretKey } from '../../lib/nostr/identity';
-import { refreshInbox } from '../../services/inbox';
+import { queryKeys } from '../../lib/queryKeys';
+import { presentInboxSync } from '../../services/syncPresentation';
+import { useInboxSync } from '../../stores/inboxSync';
 import { useSession } from '../../stores/session';
 import { useTheme } from '../../theme/ThemeProvider';
+import { useNetworkStatus } from '../../hooks/useNetworkStatus';
+import type { Vlog } from '../../types/models';
+
+const PAGE_SIZE = 12;
+
+type UpdateRow =
+  | { kind: 'filters'; key: string }
+  | { kind: 'vlog'; key: string; vlog: Vlog }
+  | { kind: 'empty'; key: string };
 
 export default function UpdatesScreen() {
   const theme = useTheme();
   const queryClient = useQueryClient();
   const identity = useSession((state) => state.identity);
-  const [circleFilter, setCircleFilter] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [circleFilter, setCircleFilter] = React.useState<string | null>(null);
+  const syncInbox = useInboxSync((state) => state.sync);
+  const syncing = useInboxSync((state) => state.syncing && state.identityId === identity?.id);
+  const restoring = useInboxSync((state) => state.restoring && state.identityId === identity?.id);
+  const syncIdentityId = useInboxSync((state) => state.identityId);
+  const lastResult = useInboxSync((state) => state.lastResult);
+  const lastAction = useInboxSync((state) => state.lastAction);
+  const syncError = useInboxSync((state) => state.error);
+  const { offline } = useNetworkStatus();
 
   const circlesQuery = useQuery({
-    queryKey: ['circles', identity?.pubkey],
+    queryKey: queryKeys.circles(identity?.pubkey),
     queryFn: () => listCirclesForViewer(identity!.pubkey),
     enabled: Boolean(identity),
   });
-  const contactsQuery = useQuery({ queryKey: ['contact-names'], queryFn: listContactNames });
-  const vlogsQuery = useQuery({
-    queryKey: ['vlogs', identity?.pubkey, circleFilter],
-    queryFn: () => listVlogs(identity!.pubkey, { circleId: circleFilter, limit: 60 }),
+  const contactsQuery = useQuery({ queryKey: queryKeys.contacts, queryFn: listContactNames });
+  const vlogsQuery = useInfiniteQuery({
+    queryKey: [...queryKeys.vlogs(identity?.pubkey), 'updates', circleFilter],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      listVlogs(identity!.pubkey, {
+        circleId: circleFilter,
+        unreadOnly: true,
+        limit: PAGE_SIZE,
+        offset: pageParam,
+      }),
+    getNextPageParam: (lastPage, pages) =>
+      lastPage.length === PAGE_SIZE ? pages.reduce((total, page) => total + page.length, 0) : undefined,
+    enabled: Boolean(identity),
+  });
+  const hasAnyQuery = useQuery({
+    queryKey: [...queryKeys.vlogs(identity?.pubkey), 'has-any', circleFilter],
+    queryFn: () => listVlogs(identity!.pubkey, { circleId: circleFilter, limit: 1 }),
     enabled: Boolean(identity),
   });
 
@@ -44,139 +78,193 @@ export default function UpdatesScreen() {
   }, [circlesQuery.data]);
 
   const sync = useCallback(async () => {
-    if (!identity || syncing) return;
-    setSyncing(true);
-    setSyncMessage(null);
-    try {
-      const secretKey = await readSecretKey(identity.id);
-      const result = await refreshInbox(secretKey);
-      setSyncMessage(
-        result.added > 0
-          ? `${result.added} new ${result.added === 1 ? 'update' : 'updates'}`
-          : 'You are up to date'
-      );
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['vlogs'] }),
-        queryClient.invalidateQueries({ queryKey: ['contact-names'] }),
-        queryClient.invalidateQueries({ queryKey: ['circles'] }),
-        queryClient.invalidateQueries({ queryKey: ['circles-with-members'] }),
-        queryClient.invalidateQueries({ queryKey: ['circle-invites'] }),
-        queryClient.invalidateQueries({ queryKey: ['circle-member'] }),
-        queryClient.invalidateQueries({ queryKey: ['comments'] }),
-        queryClient.invalidateQueries({ queryKey: ['reactions'] }),
-        queryClient.invalidateQueries({ queryKey: ['comment-reactions'] }),
-      ]);
-    } catch (error) {
-      setSyncMessage('Could not reach your relays');
-      Alert.alert('Sync failed', error instanceof Error ? error.message : 'Unknown error');
-    } finally {
-      setSyncing(false);
-    }
-  }, [identity, syncing, queryClient]);
+    if (identity) await syncInbox(identity, queryClient);
+  }, [identity, syncInbox, queryClient]);
 
-  const vlogs = vlogsQuery.data ?? [];
+  const vlogs = useMemo(() => vlogsQuery.data?.pages.flat() ?? [], [vlogsQuery.data]);
+  const rows = useMemo<UpdateRow[]>(
+    () => [
+      { kind: 'filters', key: 'filters' },
+      ...(vlogs.length > 0
+        ? vlogs.map((vlog) => ({ kind: 'vlog' as const, key: vlog.id, vlog }))
+        : [{ kind: 'empty' as const, key: 'empty' }]),
+    ],
+    [vlogs]
+  );
   const nameFor = (pubkey: string) =>
     pubkey === identity?.pubkey ? (identity?.label ?? 'You') : (contactsQuery.data?.[pubkey] ?? shortNpub(pubkey));
+  const syncPresentation =
+    syncIdentityId === identity?.id && lastResult && (lastAction === 'manual' || !lastResult.allRelaysComplete)
+      ? presentInboxSync(lastResult, 'updates')
+      : null;
+  const currentSyncError = syncIdentityId === identity?.id ? syncError : null;
+
+  const emptyState = () => {
+    if (vlogsQuery.isLoading) return <VlogListSkeleton />;
+    if (vlogsQuery.isError) {
+      return (
+        <ErrorState title="Couldn’t open moments" onAction={() => vlogsQuery.refetch()} />
+      );
+    }
+    if (restoring) return <LoadingState label="Restoring your Folio" />;
+    if (circlesQuery.isError) {
+      return <ErrorState title="Couldn’t open circles" onAction={() => circlesQuery.refetch()} />;
+    }
+    if (circlesQuery.isLoading) return <LoadingState label="Opening circles" />;
+    if (!circleFilter && (circlesQuery.data?.length ?? 0) === 0) {
+      return (
+        <EmptyState
+          title="Start a private circle"
+          description="Only the people you invite can see it."
+          actionLabel="Create circle"
+          onAction={() => router.push('/circle/new')}
+        />
+      );
+    }
+    if (hasAnyQuery.isLoading) return <LoadingState label="Checking earlier moments" />;
+    if (hasAnyQuery.isError) {
+      return <ErrorState title="Couldn’t check earlier moments" onAction={() => hasAnyQuery.refetch()} />;
+    }
+    if (offline && !hasAnyQuery.data?.length) {
+      return (
+        <EmptyState
+          title="Nothing saved yet"
+          description="Reconnect to check for moments."
+          actionLabel="Open Archive"
+          onAction={() => router.push('/(tabs)/archive')}
+        />
+      );
+    }
+    if (hasAnyQuery.data?.length) {
+      return (
+        <View
+          accessibilityLiveRegion="polite"
+          style={{
+            alignItems: 'center',
+            gap: theme.spacing.lg,
+            paddingVertical: theme.spacing.giant,
+            borderTopWidth: 1,
+            borderTopColor: theme.colors.border,
+          }}
+        >
+          <View
+            style={{
+              width: 48,
+              height: 48,
+              borderRadius: 24,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: theme.colors.surfaceSubtle,
+            }}
+          >
+            <Feather name="check" size={22} color={theme.colors.textSecondary} />
+          </View>
+          <AppText variant="headline">{circleFilter ? 'Nothing new here' : 'You’re caught up'}</AppText>
+          <Button label="Open Archive" variant="secondary" style={{ alignSelf: 'center' }} onPress={() => router.push('/(tabs)/archive')} />
+        </View>
+      );
+    }
+    return (
+      <EmptyState
+        title={circleFilter ? 'Nothing new here' : 'No moments yet'}
+        actionLabel={circleFilter ? 'Show all' : 'Create a moment'}
+        onAction={() => (circleFilter ? setCircleFilter(null) : router.push('/create'))}
+      />
+    );
+  };
 
   return (
     <Screen padded={false} edges={['top', 'left', 'right']}>
       <FlatList
-        data={vlogs}
-        keyExtractor={(item) => item.id}
+        data={rows}
+        keyExtractor={(item) => item.key}
+        stickyHeaderIndices={[1]}
+        showsVerticalScrollIndicator={false}
+        onEndReachedThreshold={0.35}
+        onEndReached={() => {
+          if (vlogsQuery.hasNextPage && !vlogsQuery.isFetching) vlogsQuery.fetchNextPage().catch(() => undefined);
+        }}
         refreshControl={
           <RefreshControl
             refreshing={syncing}
-            onRefresh={sync}
+            onRefresh={() => void sync()}
             tintColor={theme.colors.textSecondary}
             colors={[theme.colors.textPrimary]}
             progressBackgroundColor={theme.colors.surface}
           />
         }
         ListHeaderComponent={
-          <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
+          <View>
             <PageHeader
-              title="Updates"
-              subtitle={syncMessage ?? 'Life, as it happens.'}
-              right={
-                <Pressable
-                  onPress={sync}
-                  accessibilityRole="button"
-                  accessibilityLabel="Check for updates"
-                  style={{
-                    width: theme.layout.minTouchTarget,
-                    height: theme.layout.minTouchTarget,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Feather name={syncing ? 'loader' : 'refresh-cw'} size={20} color={theme.colors.textSecondary} />
-                </Pressable>
-              }
+              eyebrow="folio"
+              title="New moments"
+              right={<IconButton icon="refresh-cw" label="Check for updates" loading={syncing} onPress={() => void sync()} />}
             />
-            {(circlesQuery.data ?? []).length > 0 ? (
-              <View style={{ marginBottom: theme.spacing.md }}>
-                <FlatList
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  data={[{ id: null as string | null, name: 'Everything' }, ...(circlesQuery.data ?? [])]}
-                  keyExtractor={(item) => item.id ?? 'all'}
-                  renderItem={({ item }) => {
-                    const active = circleFilter === item.id;
-                    return (
-                      <Pressable
-                        onPress={() => setCircleFilter(item.id)}
-                        style={{
-                          paddingHorizontal: theme.spacing.lg,
-                          minHeight: 36,
-                          borderRadius: theme.radius.pill,
-                          borderWidth: 1,
-                          borderColor: active ? theme.colors.ink : theme.colors.border,
-                          backgroundColor: active ? theme.colors.ink : 'transparent',
-                          justifyContent: 'center',
-                          marginRight: theme.spacing.sm,
-                        }}
-                      >
-                        <AppText variant="label" color={active ? 'onInk' : 'textSecondary'}>
-                          {item.name}
-                        </AppText>
-                      </Pressable>
-                    );
-                  }}
-                />
+            {offline ? <InlineNotice message="Offline · showing saved moments" tone="warning" /> : null}
+            {currentSyncError ? <InlineNotice message="Couldn’t refresh" tone="error" /> : null}
+            {!currentSyncError && syncPresentation ? (
+              <View style={{ marginTop: theme.spacing.sm }}>
+                <InlineNotice message={syncPresentation.message} tone={syncPresentation.tone} />
               </View>
             ) : null}
           </View>
         }
-        renderItem={({ item }) => (
-          <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
+        renderItem={({ item, index }) => {
+          if (item.kind === 'filters') {
+            const circles = circlesQuery.data ?? [];
+            if (circles.length === 0) return null;
+            return (
+              <View
+                style={{
+                  backgroundColor: theme.colors.background,
+                  borderBottomWidth: 1,
+                  borderBottomColor: theme.colors.border,
+                  paddingBottom: theme.spacing.md,
+                }}
+              >
+                <FlatList
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ gap: theme.spacing.sm, paddingTop: theme.spacing.sm }}
+                  data={[{ id: null as string | null, name: 'All circles' }, ...circles]}
+                  keyExtractor={(circle) => circle.id ?? 'all'}
+                  renderItem={({ item: circle }) => (
+                    <FilterChip label={circle.name} active={circleFilter === circle.id} onPress={() => setCircleFilter(circle.id)} />
+                  )}
+                />
+              </View>
+            );
+          }
+          if (item.kind === 'empty') return <View>{emptyState()}</View>;
+          return (
             <VlogRow
-              vlog={{ ...item, circleName: item.circleName ?? circlesById.get(item.circleId ?? '') ?? null }}
-              authorLabel={nameFor(item.authorPubkey)}
+              vlog={{
+                ...item.vlog,
+                circleName: item.vlog.circleName ?? circlesById.get(item.vlog.circleId ?? '') ?? null,
+              }}
+              authorLabel={nameFor(item.vlog.authorPubkey)}
+              variant={index === 1 ? 'hero' : 'standard'}
             />
-          </View>
-        )}
-        ListEmptyComponent={
-          vlogsQuery.isLoading ? (
-            <View />
-          ) : vlogsQuery.isError ? (
-            <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
-              <ErrorState
-                message={vlogsQuery.error instanceof Error ? vlogsQuery.error.message : undefined}
-                onAction={() => vlogsQuery.refetch()}
-              />
-            </View>
-          ) : (
-            <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
-              <EmptyState
-                title="Nothing here yet"
-                description="When someone in your circles shares a video, it arrives here in the order it was posted."
-                actionLabel={circleFilter ? 'Show everything' : 'Create a circle'}
-                onAction={() => (circleFilter ? setCircleFilter(null) : router.push('/(tabs)/circles'))}
-              />
-            </View>
-          )
+          );
+        }}
+        ListFooterComponent={
+          vlogsQuery.isFetchingNextPage ? (
+            <LoadingState label="Loading" />
+          ) : vlogsQuery.isError && vlogs.length > 0 ? (
+            <ErrorState
+              title="Couldn’t load more"
+              onAction={() => {
+                if (vlogsQuery.hasNextPage) void vlogsQuery.fetchNextPage();
+                else void vlogsQuery.refetch();
+              }}
+            />
+          ) : undefined
         }
-        contentContainerStyle={{ paddingBottom: theme.spacing.huge }}
+        contentContainerStyle={{
+          paddingHorizontal: theme.layout.screenMargin,
+          paddingBottom: theme.spacing.huge,
+          flexGrow: 1,
+        }}
       />
     </Screen>
   );

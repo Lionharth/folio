@@ -38,13 +38,36 @@ Blossom servers store opaque ciphertext.
 - **Pure modules** (`crypto/bytes`, `crypto/chunkedFile`) have no React Native
   imports and are tested under Node with a different AES backend.
 
+## UI and navigation state
+
+- JavaScript tabs contain Updates, Circles, Archive and Profile. The custom tab
+  bar inserts a Create action; `/create`, `/capture` and `/vlog/[id]` are root
+  Stack routes, so none leaves a tab bar underneath a full-screen flow.
+- `src/lib/queryKeys.ts` owns identity-aware keys and invalidation. Updates,
+  Archive, circle feeds and vlog detail share one vlog root. Publish, sync,
+  read and favourite writes therefore cannot leave independent stale lists.
+- Updates and Archive use `useInfiniteQuery` with repository `limit`/`offset`.
+  Updates adds `unreadOnly`; Archive remains the complete history.
+- `src/stores/inboxSync.ts` owns bootstrap/manual sync, reconnect retry and
+  imported-identity restoration. `syncPresentation.ts` maps relay reachability
+  to truthful UI copy.
+- The viewer scopes the existing theme context to dark without changing the
+  saved preference. React Native `Animated`/`PanResponder` drive player docking
+  and the lower details layer; `useReducedMotion` supplies non-gesture access.
+
 ## State
 
-- **Zustand** for session (active identity), capture hand-off and transient UI
-  state.
+- **Zustand** for session (active identity), capture hand-off, inbox sync and
+  transient UI state. Session loading always settles and exposes a retryable
+  startup error; the tabs redirect to Welcome when no identity remains.
 - **TanStack Query** for reads from SQLite (circles, vlogs, archive). SQLite is
-  the cache; queries invalidate after writes.
-- **React context** for the theme, with a persisted `theme.preference` setting.
+  the cache; queries invalidate after writes through the shared key helpers.
+- **React context** for the theme, with a persisted `theme.preference` setting
+  and scoped cinema override.
+- `onboarding.recoveryPending` is a non-secret SQLite settings marker. It resumes
+  the active identity's recovery-key acknowledgment after process death and is
+  cleared only after acknowledgment. Secret keys remain exclusively in
+  SecureStore.
 
 ## Identity
 
@@ -132,8 +155,10 @@ recorded as `invited` or `active` on the owner's device keeps receiving post
 keys until removal, so losing an acceptance cannot lock them out.
 
 The inbox sync runs once in the background when the tabs mount, which is what
-restores circles immediately after an identity import. Manual pull-to-refresh
-still exposes relay errors.
+restores circles immediately after an identity import. A failed bootstrap retries
+only when NetInfo reports a return to connectivity. Manual and automatic paths
+share the same result state, so imported restoration, cached offline content and
+partial history are presented distinctly.
 
 ## Display names
 
@@ -184,7 +209,9 @@ contact to an older name.
    complete only after an EOSE-backed empty page; timeouts and connection
    failures never advance its cursor. Initial backfill and the incremental window
    keep separate cursors in `inbox_relay_state`; later syncs use a 3-day
-   overlapping window.
+   overlapping window. `InboxRefreshResult.anyRelaySucceeded` and
+   `allRelaysComplete` expose these local completion facts to the UI; an
+   unreachable or partial inbox is never presented as successfully up to date.
 2. Unwrap each wrap (signature checks, rumor/seal pubkey match).
 3. Accept `kind: 15` file messages with a well-formed `folio-key` payload and a
    32-byte key, and `kind: 14` control messages with a well-formed Folio payload.

@@ -2,7 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { useColorScheme as useSystemColorScheme } from 'react-native';
 
 import { getSetting, setSetting } from '../lib/database/settings';
-import { fontFamily, layout, palettes, radius, spacing, typeScale, type ColorScheme, type Palette } from './tokens';
+import { fontFamily, layout, media, motion, palettes, radius, spacing, typeScale, type ColorScheme, type Palette } from './tokens';
 
 export type ThemePreference = 'system' | 'light' | 'dark';
 
@@ -12,6 +12,8 @@ export interface Theme {
   spacing: typeof spacing;
   radius: typeof radius;
   layout: typeof layout;
+  media: typeof media;
+  motion: typeof motion;
   type: typeof typeScale;
   font: typeof fontFamily;
 }
@@ -31,6 +33,8 @@ function buildTheme(scheme: ColorScheme): Theme {
     spacing,
     radius,
     layout,
+    media,
+    motion,
     type: typeScale,
     font: fontFamily,
   };
@@ -73,6 +77,13 @@ export function ThemeProvider({
     [scheme, preference, setPreference]
   );
 
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+}
+
+export function ThemeScope({ scheme, children }: { scheme: ColorScheme; children: React.ReactNode }) {
+  const context = useContext(ThemeContext);
+  if (!context) throw new Error('ThemeScope must be used inside ThemeProvider');
+  const value = useMemo(() => ({ ...context, theme: buildTheme(scheme) }), [context, scheme]);
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
 

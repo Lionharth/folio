@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Changed
+
+- Cinematic editorial redesign across every user-facing screen: large media
+  covers, stronger serif hierarchy, readable secondary text, 48 dp controls,
+  layout-matched loading states, contextual errors, and reduced-motion support.
+- Simplified interface copy throughout: the Create action is icon-only, redundant
+  subtitles and step narration are gone, empty/sync/error states are concise, and
+  secondary explanations now appear only where privacy, recovery or failure
+  meaning requires them.
+- Hid scroll indicators, pinned Update filters and the circle-detail action bar,
+  made Archive month headings sticky, improved the caught-up completion state,
+  and normalized the Profile Advanced card spacing.
+- Navigation now has four tabs (Updates, Circles, Archive, Profile) around a
+  central full-screen Create action. Create and Capture no longer behave like
+  tab destinations.
+- Updates is a finite, paginated unread inbox with a clear caught-up state.
+  Archive owns complete chronological history with incremental loading, month
+  groups, search, circle filters and a two-column memory grid.
+- Vlog playback uses an always-dark cinema surface with player docking,
+  sequential clip progress, and a draggable/keyboard/TalkBack-accessible lower
+  layer for captions, reactions and threaded comments.
+- Circles have media-led cards and paginated circle-specific feeds. Internal
+  identifiers, membership versions and media hashes move behind Advanced or
+  Technical details.
+- Onboarding and Profile use accurate privacy/sync/storage copy. First-run
+  recovery-key acknowledgment now survives process death, and imported
+  identities expose restoration progress.
+- Identity setup keeps the best-effort NIP-17 inbox-relay announcement after
+  creation and import. Recovery keys remain only in SecureStore; the resumable
+  checkpoint stores a non-secret local marker.
+
 ### Added
 
 - Private comments and reactions on vlogs and comments, delivered as encrypted
@@ -38,6 +69,28 @@
 
 ### Fixed
 
+- Inbox results now expose relay reachability and completion. All-relays-offline
+  or partial sync can no longer display a false "up to date" or "no invitations"
+  success state; reconnect retries use NetInfo without a failure loop.
+- Shared identity-aware query invalidation keeps Updates, Archive, circle feeds,
+  read state, favourites, invitations and Create consistent after mutations.
+  Repository offsets replace the old unreachable 60/100-row ceilings.
+- Startup SecureStore failures have a retry state, deleting the final identity
+  returns to Welcome, first-circle creation refreshes Create, and publishing
+  replaces the editor instead of returning to it on Back.
+- Recovery resume now comes only from the persisted checkpoint, not a URL
+  parameter; failed restores stop masquerading as active. Identity import
+  invalidates in-flight sync ownership, and a new recovery key is verified before
+  the recovery screen. Publishing refreshes circle-card artwork, viewer read-state
+  updates targeted caches, sheet docking lays out only after release, and identity
+  refreshes keep the tab navigator mounted.
+- Create/Capture retain entry state on failure, guard unsaved/in-flight removal,
+  expose real progress, handle picker/recording/permission failures, and state
+  the current duration/size and no-background-upload limits honestly.
+- Query failures, unavailable media, zero clips, membership failures and social
+  loading no longer masquerade as generic empty/not-found states. Reply/Edit now
+  opens and focuses the composer in the expanded viewer layer.
+
 - The tab bar now respects the Android navigation-bar inset, so it is not
   hidden under 3-button or gesture navigation. Full-screen screens also include
   the bottom safe area.
@@ -58,6 +111,29 @@
 - `circle_invites` table (schema v3), invitation UI with accept/decline, resend,
   and owner-side acceptance handling.
 - 5 more tests for control-message wrapping and validation (25 total).
+
+### Validation
+
+- `npm run typecheck`, `npm run typecheck:node` and `npm run lint` pass.
+- `npm test` passes 63 tests, including new sync-presentation and recovery-
+  checkpoint coverage. Device results are recorded below only when exercised.
+
+### Verified on Android emulator
+
+- Existing encrypted data loaded into the four-tab editorial shell. Updates
+  rendered the large lead moment and circle filters; opening it downloaded,
+  verified, decrypted and played the real clip.
+- Viewer Back collapsed the expanded conversation layer before leaving; the
+  opened item disappeared from Updates and remained present in Archive.
+- Archive month grouping, search/filter controls and two-column cards rendered;
+  Circles, circle detail/feed, Profile identity controls, theme choices and
+  Create’s full-screen layout rendered with real data.
+- Recording flow: camera and microphone prompts, granted-permission re-entry,
+  live duration/size, stop/save handoff, and unsaved Create removal guard.
+- Not exercised on-device in this pass: final publish of a newly recorded clip,
+  new social delivery, fresh-install identity creation/recovery routing,
+  TalkBack/font-scaling matrix, physical hardware, iOS, rotation/tablet, and
+  offline/partial-relay transitions.
 
 ### Verified on device
 

@@ -17,7 +17,7 @@ export interface ReactionBarProps {
 export function ReactionBar({ reactions, onToggle, disabled = false, compact = false }: ReactionBarProps) {
   const theme = useTheme();
   const [open, setOpen] = useState(false);
-  const size = compact ? 30 : 38;
+  const size = theme.layout.minTouchTarget;
 
   const toggle = (emoji: string, active: boolean) => {
     onToggle(emoji, active);
@@ -37,7 +37,7 @@ export function ReactionBar({ reactions, onToggle, disabled = false, compact = f
             hitSlop={compact ? 8 : undefined}
             onPress={() => toggle(reaction.emoji, !reaction.mine)}
             style={({ pressed }) => ({
-              minHeight: compact ? 32 : theme.layout.minTouchTarget,
+              minHeight: theme.layout.minTouchTarget,
               paddingHorizontal: compact ? theme.spacing.sm : theme.spacing.md,
               borderRadius: theme.radius.pill,
               borderWidth: 1,

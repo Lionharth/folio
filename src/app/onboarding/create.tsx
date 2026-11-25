@@ -1,156 +1,177 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, View } from 'react-native';
-import { router } from 'expo-router';
-import * as Clipboard from 'expo-clipboard';
-import * as Haptics from 'expo-haptics';
-import { createPool, DEFAULT_DM_RELAYS } from '../../lib/nostr/relays';
-import { publishInboxRelays } from '../../lib/nostr/dm';
-import { createIdentity, exportIdentitySecret, readSecretKey } from '../../lib/nostr/identity';
+import { Alert, View } from 'react-native';
+import { Redirect, router, usePreventRemove } from 'expo-router';
+import { useQuery } from '@tanstack/react-query';
+
 import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
-import { Card } from '../../components/ui/Card';
-import { Screen } from '../../components/ui/Screen';
+import { InlineNotice } from '../../components/ui/Notice';
+import { RecoveryKeyPanel } from '../../components/ui/RecoveryKeyPanel';
+import { ScreenScroll } from '../../components/ui/Screen';
+import { ErrorState, LoadingState } from '../../components/ui/States';
 import { TextField } from '../../components/ui/TextField';
-import { useTheme } from '../../theme/ThemeProvider';
+import { createIdentity, deleteIdentity, exportIdentitySecret, type StoredIdentity } from '../../lib/nostr/identity';
+import { announceInboxRelays } from '../../services/identitySetup';
+import {
+  abortRecoveryCheckpoint,
+  beginRecoveryCheckpoint,
+  clearRecoveryCheckpointForIdentity,
+  markRecoveryCheckpointIdentity,
+  shouldResumeRecovery,
+} from '../../lib/security/recoveryCheckpoint';
 import { useSession } from '../../stores/session';
+import { useTheme } from '../../theme/ThemeProvider';
 
-async function announceInbox(identityId: string) {
-  try {
-    const secretKey = await readSecretKey(identityId);
-    const pool = createPool({ secretKey });
-    try {
-      await publishInboxRelays(pool, secretKey, DEFAULT_DM_RELAYS);
-    } finally {
-      pool.destroy();
-    }
-  } catch {
-    // Best-effort: private messages still fall back to the default relay set.
-  }
+interface CreatedIdentity extends StoredIdentity {
+  nsec?: string;
 }
 
 export default function CreateIdentityScreen() {
   const theme = useTheme();
+  const identity = useSession((state) => state.identity);
+  const sessionLoading = useSession((state) => state.loading);
+  const sessionError = useSession((state) => state.error);
   const refresh = useSession((state) => state.refresh);
-  const [name, setName] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [created, setCreated] = useState<{ id: string; nsec: string; npub: string } | null>(null);
-  const [revealed, setRevealed] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [label, setLabel] = useState('');
+  const [created, setCreated] = useState<CreatedIdentity | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [completed, setCompleted] = useState(false);
+  const recoveryQuery = useQuery({
+    queryKey: ['onboarding-recovery-checkpoint', identity?.id],
+    queryFn: () => shouldResumeRecovery(identity!.id),
+    enabled: Boolean(identity),
+  });
+  const resumingIdentity = identity && recoveryQuery.data ? identity : null;
+  const recoveryIdentity = created ?? resumingIdentity;
+
+  const disableRemovalPrevention = usePreventRemove(Boolean(recoveryIdentity) && !completed, () => {
+    Alert.alert('Save your recovery key first', 'Copy the key and confirm that you have stored it somewhere private before leaving this step.');
+  });
 
   const create = async () => {
-    if (creating) return;
-    setCreating(true);
-    try {
-      const identity = await createIdentity(name.trim() || 'Me');
-      const nsec = await exportIdentitySecret(identity.id);
-      setCreated({ id: identity.id, nsec, npub: identity.npub });
-      setRevealed(true);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => undefined);
-      await refresh();
-      announceInbox(identity.id).catch(() => undefined);
-    } catch (error) {
-      Alert.alert('Could not create your identity', error instanceof Error ? error.message : 'Unknown error');
-    } finally {
-      setCreating(false);
+    const trimmed = label.trim();
+    if (!trimmed) {
+      setError('Choose a display name.');
+      return;
     }
+    setBusy(true);
+    setError(null);
+    try {
+      await beginRecoveryCheckpoint();
+    } catch {
+      setError('Folio could not prepare a safe recovery checkpoint. No identity was created; try again.');
+      setBusy(false);
+      return;
+    }
+    let newIdentity: Awaited<ReturnType<typeof createIdentity>>;
+    try {
+      newIdentity = await createIdentity(trimmed);
+    } catch (reason) {
+      await abortRecoveryCheckpoint().catch(() => undefined);
+      setError(reason instanceof Error ? reason.message : 'Identity creation failed');
+      setBusy(false);
+      return;
+    }
+
+    let nsec: string;
+    try {
+      nsec = await exportIdentitySecret(newIdentity.id);
+    } catch {
+      await deleteIdentity(newIdentity.id).catch(() => undefined);
+      await abortRecoveryCheckpoint().catch(() => undefined);
+      await refresh().catch(() => undefined);
+      setError('Folio could not read the new recovery key, so the identity was discarded. Try again.');
+      setBusy(false);
+      return;
+    }
+    await markRecoveryCheckpointIdentity(newIdentity.id).catch(() => undefined);
+    setCreated({ ...newIdentity, nsec });
+    void announceInboxRelays(newIdentity.id);
+    await refresh().catch(() => undefined);
+    setBusy(false);
   };
 
-  const copy = async () => {
-    if (!created) return;
-    await Clipboard.setStringAsync(created.nsec);
-    setCopied(true);
-    await Haptics.selectionAsync().catch(() => undefined);
+  const acknowledge = async () => {
+    // Retry opening the session before allowing navigation to the tabs.
+    await refresh();
+    if (recoveryIdentity) await clearRecoveryCheckpointForIdentity(recoveryIdentity.id);
+    setCompleted(true);
+    disableRemovalPrevention();
+    router.replace('/(tabs)/updates');
   };
 
-  if (!created) {
+  if (sessionLoading || (identity && !created && recoveryQuery.isPending)) {
     return (
-      <Screen>
-        <View style={{ flex: 1, paddingTop: theme.spacing.huge, gap: theme.spacing.xxl }}>
-          <View style={{ gap: theme.spacing.sm }}>
-            <AppText variant="title">What should we call you?</AppText>
-            <AppText variant="body" color="textSecondary">
-              This name is only shared with the people you invite. You can change it later.
-            </AppText>
-          </View>
-          <TextField
-            label="Display name"
-            placeholder="Your name"
-            value={name}
-            onChangeText={setName}
-            autoFocus
-            autoCapitalize="words"
-            returnKeyType="done"
-            onSubmitEditing={create}
-            maxLength={40}
-          />
-          <Button label="Create Folio" size="lg" fullWidth loading={creating} onPress={create} />
-          <AppText variant="caption" color="textTertiary">
-            A private identity is generated on this device. Nothing about you is published.
-          </AppText>
+      <ScreenScroll>
+        <View style={{ paddingVertical: theme.spacing.xxl, gap: theme.spacing.xxxl }}>
+          <AppText style={{ fontFamily: theme.font.serifMedium, fontSize: 44, lineHeight: 48 }}>folio</AppText>
+          <LoadingState label="Opening Folio" />
         </View>
-      </Screen>
+      </ScreenScroll>
     );
   }
 
+  if (identity && !created && recoveryQuery.isError) {
+    return (
+      <ScreenScroll>
+        <View style={{ paddingVertical: theme.spacing.xxl, gap: theme.spacing.xxxl }}>
+          <AppText style={{ fontFamily: theme.font.serifMedium, fontSize: 44, lineHeight: 48 }}>folio</AppText>
+          <ErrorState title="Couldn’t verify recovery setup" onAction={() => recoveryQuery.refetch()} />
+        </View>
+      </ScreenScroll>
+    );
+  }
+
+  if (identity && !created && recoveryQuery.data === false) {
+    return <Redirect href="/(tabs)/updates" />;
+  }
+
   return (
-    <Screen>
-      <View style={{ flex: 1, paddingTop: theme.spacing.huge, gap: theme.spacing.xl }}>
-        <View style={{ gap: theme.spacing.sm }}>
-          <AppText variant="title">Your recovery key</AppText>
-          <AppText variant="body" color="textSecondary">
-            This key is the only way back into your Folio if you lose this phone. Store it somewhere private. Anyone
-            who has it can read everything you share.
-          </AppText>
-        </View>
-
-        <Card>
-          <View style={{ gap: theme.spacing.md }}>
-            <AppText variant="label" color="textSecondary">
-              RECOVERY KEY
-            </AppText>
-            <Pressable
-              onPress={() => setRevealed((value) => !value)}
-              style={{ minHeight: theme.layout.minTouchTarget, justifyContent: 'center' }}
-              accessibilityRole="button"
-              accessibilityLabel={revealed ? 'Hide recovery key' : 'Reveal recovery key'}
-            >
-              <AppText variant="mono" color="textPrimary" numberOfLines={2}>
-                {revealed ? created.nsec : '•••••••••••••••••••••••••••••••••••••••••••••••••••••••••••'}
-              </AppText>
-            </Pressable>
-            <AppText variant="caption" color="textTertiary">
-              Tap the key to {revealed ? 'hide' : 'reveal'} it.
-            </AppText>
-            <Button label={copied ? 'Copied' : 'Copy recovery key'} variant="secondary" onPress={copy} />
+    <ScreenScroll>
+      <View style={{ paddingVertical: theme.spacing.xxl, gap: theme.spacing.xxxl }}>
+        <AppText style={{ fontFamily: theme.font.serifMedium, fontSize: 44, lineHeight: 48 }}>folio</AppText>
+        {recoveryIdentity ? (
+          <View style={{ gap: theme.spacing.lg }}>
+            {sessionError ? (
+              <InlineNotice
+                message="Your identity and checkpoint were created, but secure storage could not be reopened. Your key is still available below; saving it retries opening the session."
+                tone="error"
+              />
+            ) : null}
+            <RecoveryKeyPanel
+              key={recoveryIdentity.id}
+              identityId={recoveryIdentity.id}
+              recoveryKey={created?.id === recoveryIdentity.id ? created.nsec : undefined}
+              onAcknowledge={acknowledge}
+            />
           </View>
-        </Card>
-
-        <Card subtle>
-          <View style={{ gap: theme.spacing.xs }}>
-            <AppText variant="bodyStrong">Folio cannot recover this for you</AppText>
-            <AppText variant="caption" color="textSecondary">
-              There is no server holding a copy. If you lose the key and this device, your Folio is gone. Write it down
-              or put it in a password manager.
-            </AppText>
+        ) : (
+          <View style={{ gap: theme.spacing.xl }}>
+            <View style={{ gap: theme.spacing.sm }}>
+              <AppText variant="meta" color="textSecondary">YOUR PRIVATE IDENTITY</AppText>
+              <AppText variant="title">What should your circle call you?</AppText>
+              <AppText variant="body" color="textSecondary">Only people in your circles see this name.</AppText>
+            </View>
+            <TextField
+              label="Display name"
+              placeholder="Alex"
+              value={label}
+              onChangeText={(value) => { setLabel(value); setError(null); }}
+              maxLength={48}
+              autoFocus
+              autoCapitalize="words"
+              error={!label.trim() && error ? error : undefined}
+              editable={!busy}
+            />
+            {label.trim() && error ? <InlineNotice message={error} tone="error" /> : null}
+            <View style={{ gap: theme.spacing.sm }}>
+              <Button label="Create identity" size="lg" fullWidth loading={busy} onPress={() => void create()} />
+              <Button label="Back" variant="ghost" fullWidth disabled={busy} onPress={() => router.back()} />
+            </View>
           </View>
-        </Card>
-
-        <View style={{ flex: 1 }} />
-        <View style={{ paddingBottom: theme.spacing.xxxl, gap: theme.spacing.md }}>
-          <Button
-            label="I've saved my key"
-            size="lg"
-            fullWidth
-            onPress={() => router.replace('/(tabs)/updates')}
-          />
-          <Button
-            label="Show key again"
-            variant="ghost"
-            fullWidth
-            onPress={() => setRevealed(true)}
-          />
-        </View>
+        )}
       </View>
-    </Screen>
+    </ScreenScroll>
   );
 }

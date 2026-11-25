@@ -457,6 +457,7 @@ export interface ListVlogsOptions {
   circleId?: string | null;
   search?: string;
   favouritesOnly?: boolean;
+  unreadOnly?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -470,6 +471,7 @@ export async function listVlogs(viewerPubkey: string, options: ListVlogsOptions 
     params.push(options.circleId);
   }
   if (options.favouritesOnly) clauses.push('is_favourite = 1');
+  if (options.unreadOnly) clauses.push('unread = 1');
   if (options.search?.trim()) {
     clauses.push('(LOWER(COALESCE(title, \'\')) LIKE ? OR LOWER(COALESCE(description, \'\')) LIKE ?)');
     const needle = `%${options.search.trim().toLowerCase()}%`;

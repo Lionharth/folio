@@ -58,15 +58,21 @@ export function CommentComposer({
       <TextField
         value={value}
         onChangeText={setValue}
+        accessibilityLabel={mode === 'reply' ? 'Write a reply' : mode === 'edit' ? 'Edit your comment' : 'Add a comment'}
+        autoFocus={mode !== 'create'}
         placeholder={mode === 'reply' ? 'Write a reply' : mode === 'edit' ? 'Edit your comment' : 'Add a comment'}
         multiline
         maxLength={MAX_COMMENT_LENGTH}
         editable={!disabled && !submitting}
       />
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <AppText variant="caption" color="textTertiary">
-          {value.length}/{MAX_COMMENT_LENGTH}
-        </AppText>
+        <View style={{ flex: 1 }}>
+          {value.length >= MAX_COMMENT_LENGTH * 0.85 ? (
+            <AppText variant="caption" color="textTertiary">
+              {MAX_COMMENT_LENGTH - value.length} left
+            </AppText>
+          ) : null}
+        </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
           {onCancel ? <Button label="Cancel" variant="ghost" onPress={onCancel} /> : null}
           <Button label={label} loading={submitting} disabled={!canSubmit} onPress={() => void submit()} />

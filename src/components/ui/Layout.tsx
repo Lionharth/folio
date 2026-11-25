@@ -12,7 +12,7 @@ export function Badge({ label, tone = 'neutral' }: { label: string; tone?: 'neut
     tone === 'danger' ? theme.colors.dangerSurface : tone === 'accent' ? theme.colors.ink : theme.colors.surfaceSubtle;
   const color = tone === 'accent' ? 'onInk' : tone === 'danger' ? 'danger' : 'textSecondary';
   return (
-    <View style={{ paddingHorizontal: theme.spacing.sm, paddingVertical: 2, borderRadius: theme.radius.xs, backgroundColor: background }}>
+    <View style={{ paddingHorizontal: theme.spacing.sm, paddingVertical: 3, borderRadius: theme.radius.xs, backgroundColor: background }}>
       <AppText variant="meta" color={color}>
         {label}
       </AppText>
@@ -66,7 +66,8 @@ export function ListRow({
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1, minHeight: theme.layout.minTouchTarget })}
+      accessibilityLabel={subtitle ? `${title}. ${subtitle}` : title}
+      style={({ pressed }) => ({ backgroundColor: pressed ? theme.colors.surfaceSubtle : 'transparent', minHeight: theme.layout.minTouchTarget })}
     >
       {content}
     </Pressable>
@@ -83,10 +84,11 @@ export function SectionHeader({ title, action }: { title: string; action?: React
         justifyContent: 'space-between',
         marginBottom: theme.spacing.sm,
         marginTop: theme.spacing.xxl,
+        gap: theme.spacing.md,
       }}
     >
-      <AppText variant="label" color="textSecondary">
-        {title.toUpperCase()}
+      <AppText variant="label" color="textSecondary" style={{ flexShrink: 1 }}>
+        {title}
       </AppText>
       {action}
     </View>
@@ -94,35 +96,35 @@ export function SectionHeader({ title, action }: { title: string; action?: React
 }
 
 export function PageHeader({
+  eyebrow,
   title,
   subtitle,
   right,
 }: {
+  eyebrow?: string;
   title: string;
   subtitle?: string;
   right?: React.ReactNode;
 }) {
   const theme = useTheme();
   return (
-    <View
-      style={{
-        paddingTop: theme.spacing.xl,
-        paddingBottom: theme.spacing.lg,
-        flexDirection: 'row',
-        alignItems: 'flex-end',
-        justifyContent: 'space-between',
-        gap: theme.spacing.md,
-      }}
-    >
-      <View style={{ flex: 1, gap: theme.spacing.xxs }}>
-        <AppText variant="display">{title}</AppText>
-        {subtitle ? (
-          <AppText variant="caption" color="textSecondary">
-            {subtitle}
-          </AppText>
-        ) : null}
+    <View style={{ paddingTop: theme.spacing.lg, paddingBottom: theme.spacing.xl, gap: theme.spacing.md }}>
+      {eyebrow ? (
+        <AppText variant="headline" color="textSecondary" style={{ fontFamily: theme.font.serifMedium }}>
+          {eyebrow}
+        </AppText>
+      ) : null}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: theme.spacing.sm }}>
+        <View style={{ flex: 1, gap: theme.spacing.xs }}>
+          <AppText variant="display">{title}</AppText>
+          {subtitle ? (
+            <AppText variant="caption" color="textSecondary">
+              {subtitle}
+            </AppText>
+          ) : null}
+        </View>
+        {right}
       </View>
-      {right}
     </View>
   );
 }

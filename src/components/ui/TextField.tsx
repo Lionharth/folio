@@ -11,15 +11,27 @@ export interface TextFieldProps extends TextInputProps {
   suffix?: React.ReactNode;
 }
 
-export function TextField({ label, hint, error, suffix, style, multiline, ...rest }: TextFieldProps) {
+export function TextField({
+  label,
+  hint,
+  error,
+  suffix,
+  style,
+  multiline,
+  accessibilityLabel,
+  accessibilityHint,
+  ...rest
+}: TextFieldProps) {
   const theme = useTheme();
+  const id = React.useId().replace(/:/g, '');
   const [focused, setFocused] = React.useState(false);
   const borderColor = error ? theme.colors.danger : focused ? theme.colors.textSecondary : theme.colors.border;
+  const labelId = `${id}-label`;
 
   return (
     <View style={{ gap: theme.spacing.xs }}>
       {label ? (
-        <AppText variant="label" color="textSecondary">
+        <AppText nativeID={labelId} variant="label" color="textSecondary">
           {label}
         </AppText>
       ) : null}
@@ -31,7 +43,7 @@ export function TextField({ label, hint, error, suffix, style, multiline, ...res
           backgroundColor: theme.colors.surface,
           paddingHorizontal: theme.spacing.lg,
           paddingVertical: multiline ? theme.spacing.md : 0,
-          minHeight: theme.layout.minTouchTarget,
+          minHeight: 52,
           flexDirection: 'row',
           alignItems: multiline ? 'flex-start' : 'center',
           gap: theme.spacing.sm,
@@ -40,6 +52,9 @@ export function TextField({ label, hint, error, suffix, style, multiline, ...res
         <TextInput
           {...rest}
           multiline={multiline}
+          accessibilityLabel={accessibilityLabel ?? label}
+          accessibilityLabelledBy={label ? labelId : undefined}
+          accessibilityHint={accessibilityHint ?? (!error ? hint : undefined)}
           onFocus={(event) => {
             setFocused(true);
             rest.onFocus?.(event);
@@ -65,7 +80,7 @@ export function TextField({ label, hint, error, suffix, style, multiline, ...res
         {suffix}
       </View>
       {error ? (
-        <AppText variant="caption" color="danger">
+        <AppText accessibilityLiveRegion="polite" variant="caption" color="danger">
           {error}
         </AppText>
       ) : hint ? (

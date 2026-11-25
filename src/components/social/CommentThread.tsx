@@ -231,7 +231,7 @@ function CommentAction({ label, onPress }: { label: string; onPress: () => void 
       hitSlop={8}
       onPress={onPress}
       style={({ pressed }) => ({
-        minHeight: 32,
+        minHeight: 48,
         justifyContent: 'center',
         opacity: pressed ? 0.7 : 1,
         paddingVertical: theme.spacing.xs,

@@ -65,6 +65,7 @@ export function EmojiPicker({ onPick }: { onPick: (emoji: string) => void }) {
               setError(null);
             }}
             onSubmitEditing={addCustom}
+            accessibilityLabel="Custom emoji"
             placeholder="Type or paste an emoji"
             maxLength={32}
             autoCapitalize="none"

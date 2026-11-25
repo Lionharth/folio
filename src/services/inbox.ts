@@ -58,6 +58,9 @@ export interface InboxRefreshResult {
   restored: number;
   suppressed: number;
   scanned: number;
+  anyRelaySucceeded: boolean;
+  allRelaysComplete: boolean;
+  completedAt: number;
 }
 
 interface CollectedInbox {
@@ -582,6 +585,9 @@ export async function refreshInbox(
       restored,
       suppressed,
       scanned: collected.files.size + controls.length,
+      anyRelaySucceeded: anyOk,
+      allRelaysComplete: anyOk && backfillComplete && incrementalComplete,
+      completedAt: Date.now(),
     };
   } finally {
     pool.destroy();

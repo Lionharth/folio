@@ -150,11 +150,15 @@ control round trips, recipient fan-out, and validation. `tests/membership.test.t
 (6 tests) covers restore/decline ordering. `tests/social.test.ts` (7 tests)
 covers participation status, comment-id ownership, operation ordering, body and
 emoji validation, one-level threads and reaction summaries.
+`tests/syncPresentation.test.ts` (5 tests) covers unreachable, partial, empty and
+non-empty inbox presentation. `tests/recoveryCheckpoint.test.ts` (3 tests)
+covers crash-safe and per-identity recovery routing. These are pure Node tests,
+not React Native rendering or device-navigation tests.
 
 ```bash
 npm test
-# tests 55
-# pass 55
+# tests 63
+# pass 63
 # fail 0
 ```
 

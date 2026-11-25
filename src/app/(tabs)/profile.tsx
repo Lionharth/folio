@@ -1,20 +1,22 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, ScrollView, View } from 'react-native';
+import { Alert, Pressable, View } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
-import { useQuery } from '@tanstack/react-query';
 import Feather from '@expo/vector-icons/Feather';
 
 import { AppText } from '../../components/ui/AppText';
 import { Avatar } from '../../components/ui/Avatar';
 import { Button } from '../../components/ui/Button';
 import { Card, Divider } from '../../components/ui/Card';
+import { IconButton } from '../../components/ui/IconButton';
+import { InlineNotice } from '../../components/ui/Notice';
+import { ListRow, PageHeader, SectionHeader } from '../../components/ui/Layout';
 import { ScreenScroll } from '../../components/ui/Screen';
-import { SectionHeader } from '../../components/ui/Layout';
-import { DEFAULT_RELAY_LIST, PROVIDER_PRESETS } from '../../constants/providers';
-import { listCirclesForViewer } from '../../lib/database/vlogs';
-import { exportIdentitySecret } from '../../lib/nostr/identity';
+import { LoadingState } from '../../components/ui/States';
 import { shortNpub } from '../../lib/nostr/format';
+import { exportIdentitySecret } from '../../lib/nostr/identity';
+import { clearRecoveryCheckpointForIdentity } from '../../lib/security/recoveryCheckpoint';
+import { DEFAULT_RELAY_LIST } from '../../constants/providers';
 import { useSession } from '../../stores/session';
 import { useTheme, useThemePreference, type ThemePreference } from '../../theme/ThemeProvider';
 
@@ -25,190 +27,217 @@ export default function ProfileScreen() {
   const identities = useSession((state) => state.identities);
   const switchTo = useSession((state) => state.switchTo);
   const forget = useSession((state) => state.forget);
-  const [revealed, setRevealed] = useState<{ identityId: string; nsec: string } | null>(null);
-  const revealedKey = revealed && revealed.identityId === identity?.id ? revealed.nsec : null;
+  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ message: string; tone: 'neutral' | 'success' | 'error' } | null>(null);
 
-  const circlesQuery = useQuery({
-    queryKey: ['circles', identity?.pubkey],
-    queryFn: () => listCirclesForViewer(identity!.pubkey),
-    enabled: Boolean(identity),
-  });
+  if (!identity) return <LoadingState label="Opening profile" />;
+  const npub = identity.npub;
 
-  if (!identity) return null;
+  const copy = async (value: string, label: string) => {
+    try {
+      await Clipboard.setStringAsync(value);
+      setNotice({ message: `${label} copied`, tone: 'neutral' });
+    } catch (error) {
+      setNotice({ message: error instanceof Error ? error.message : `Could not copy ${label.toLowerCase()}`, tone: 'error' });
+    }
+  };
 
   const reveal = async () => {
-    if (revealedKey) {
-      setRevealed(null);
-      return;
+    if (busyAction) return;
+    setBusyAction('recovery');
+    setNotice(null);
+    try {
+      setRecoveryKey(await exportIdentitySecret(identity.id));
+    } catch (error) {
+      setNotice({ message: error instanceof Error ? error.message : 'Could not reveal the recovery key', tone: 'error' });
+    } finally {
+      setBusyAction(null);
     }
-    const nsec = await exportIdentitySecret(identity.id);
-    setRevealed({ identityId: identity.id, nsec });
+  };
+
+  const remove = (id: string, label: string) => {
+    Alert.alert(
+      `Remove ${label} from this device?`,
+      'Folio will delete this identity’s secret key and remove it from the identity list. Local diary rows and local media—including decrypted/private playback caches—are not automatically erased. Keep the recovery key to restore the identity elsewhere.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove identity',
+          style: 'destructive',
+          onPress: () => {
+            void (async () => {
+              setBusyAction(`remove:${id}`);
+              try {
+                await forget(id);
+                await clearRecoveryCheckpointForIdentity(id);
+                if (id === identity.id) setRecoveryKey(null);
+                setNotice({ message: `${label}’s key was removed from this device; previously saved local media remains`, tone: 'neutral' });
+              } catch (error) {
+                setNotice({ message: error instanceof Error ? error.message : 'Could not remove identity', tone: 'error' });
+              } finally {
+                setBusyAction(null);
+              }
+            })();
+          },
+        },
+      ]
+    );
   };
 
   return (
     <ScreenScroll>
-      <View style={{ paddingTop: theme.spacing.xl, gap: theme.spacing.xxs }}>
-        <AppText variant="display">Profile</AppText>
-      </View>
+      <PageHeader eyebrow="folio" title="Profile" />
+      {notice ? <View style={{ marginBottom: theme.spacing.lg }}><InlineNotice message={notice.message} tone={notice.tone} /></View> : null}
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.lg, marginTop: theme.spacing.xl }}>
-        <Avatar name={identity.label} size={56} />
-        <View style={{ flex: 1, gap: 2 }}>
-          <AppText variant="headline">{identity.label}</AppText>
-          <AppText variant="caption" color="textSecondary" numberOfLines={1}>
-            {shortNpub(identity.pubkey)}
-          </AppText>
-        </View>
-      </View>
-
-      <Button
-        label="Copy Folio ID"
-        variant="secondary"
-        style={{ marginTop: theme.spacing.lg }}
-        onPress={async () => {
-          await Clipboard.setStringAsync(identity.npub);
-          Alert.alert('Copied', 'Send this to a friend so they can add you to a circle.');
-        }}
-      />
-
-      <SectionHeader title="On this device" />
-      <Card padded={false}>
-        {identities.map((item, index) => (
-          <View key={item.id}>
-            <Pressable
-              onPress={() => switchTo(item.id)}
-              style={({ pressed }) => ({
-                padding: theme.spacing.lg,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: theme.spacing.md,
-                opacity: pressed ? 0.7 : 1,
-                backgroundColor: item.id === identity.id ? theme.colors.surfaceSubtle : 'transparent',
-              })}
-            >
-              <Avatar name={item.label} size={32} />
-              <View style={{ flex: 1 }}>
-                <AppText variant="bodyStrong">{item.label}</AppText>
-                <AppText variant="caption" color="textSecondary">
-                  {shortNpub(item.pubkey)}
-                </AppText>
-              </View>
-              {item.id === identity.id ? <Feather name="check" size={18} color={theme.colors.textPrimary} /> : null}
-            </Pressable>
-            {index < identities.length - 1 ? <Divider inset={theme.spacing.lg} /> : null}
+      <Card style={{ padding: theme.spacing.xl }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.lg }}>
+          <Avatar name={identity.label} size={60} />
+          <View style={{ flex: 1, gap: 3 }}>
+            <AppText variant="headline">{identity.label}</AppText>
+            <AppText variant="mono" color="textTertiary" numberOfLines={1}>{shortNpub(identity.pubkey)}</AppText>
           </View>
-        ))}
+        </View>
+        <Button label="Copy Folio ID" variant="secondary" fullWidth style={{ marginTop: theme.spacing.lg }} onPress={() => void copy(npub, 'Folio ID')} />
       </Card>
-      <View style={{ flexDirection: 'row', gap: theme.spacing.md, marginTop: theme.spacing.md }}>
-        <Button label="Add identity" variant="secondary" style={{ flexShrink: 0 }} onPress={() => router.push('/identity/new')} />
-        <Button
-          label="Remove this identity"
-          style={{ flexShrink: 0 }}
-          variant="ghost"
-          onPress={() => {
-            Alert.alert(
-              'Remove identity from this device?',
-              'Your recovery key still works. Without it, this identity cannot be restored.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Remove', style: 'destructive', onPress: () => forget(identity.id) },
-              ]
+
+      <SectionHeader title="Identities" />
+      <Card>
+        <View style={{ gap: theme.spacing.xs }}>
+          {identities.map((item) => {
+            const active = item.id === identity.id;
+            return (
+              <View key={item.id} style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Pressable
+                  onPress={() => {
+                    if (active || busyAction) return;
+                    setBusyAction(`switch:${item.id}`);
+                    switchTo(item.id)
+                      .then(() => {
+                        setRecoveryKey(null);
+                        setNotice({ message: `Switched to ${item.label}`, tone: 'success' });
+                      })
+                      .catch((error) => setNotice({ message: error instanceof Error ? error.message : 'Could not switch identity', tone: 'error' }))
+                      .finally(() => setBusyAction(null));
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Use identity ${item.label}`}
+                  accessibilityState={{ selected: active, busy: busyAction === `switch:${item.id}`, disabled: Boolean(busyAction) }}
+                  disabled={Boolean(busyAction)}
+                  style={{ flex: 1, minHeight: 64, paddingVertical: theme.spacing.sm, paddingLeft: theme.spacing.sm, flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}
+                >
+                  <Avatar name={item.label} size={36} />
+                  <View style={{ flex: 1 }}>
+                    <AppText variant="bodyStrong">{item.label}</AppText>
+                    <AppText variant="caption" color="textSecondary">{active ? 'Current' : 'Switch'}</AppText>
+                  </View>
+                  {active ? <Feather name="check" size={18} color={theme.colors.textPrimary} /> : null}
+                </Pressable>
+                <IconButton
+                  icon="trash-2"
+                  tone="danger"
+                  label={`Remove identity ${item.label} from this device`}
+                  loading={busyAction === `remove:${item.id}`}
+                  disabled={Boolean(busyAction)}
+                  onPress={() => remove(item.id, item.label)}
+                />
+              </View>
             );
-          }}
-        />
-      </View>
-      <AppText variant="caption" color="textTertiary" style={{ marginTop: theme.spacing.sm }}>
-        Multiple identities on one device are useful for testing the two-device flow. A normal Folio has one.
-      </AppText>
+          })}
+        </View>
+        <Divider />
+        <Button label="Add another identity" variant="ghost" fullWidth disabled={Boolean(busyAction)} onPress={() => router.push('/identity/new')} />
+      </Card>
 
       <SectionHeader title="Appearance" />
-      <Card padded={false}>
-        {(['system', 'light', 'dark'] as ThemePreference[]).map((option, index) => (
-          <View key={option}>
-            <Pressable
-              onPress={() => setPreference(option)}
-              style={{ padding: theme.spacing.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}
-            >
-              <AppText variant="body">{option === 'system' ? 'Match system' : option === 'light' ? 'Light' : 'Dark'}</AppText>
-              {preference === option ? <Feather name="check" size={18} color={theme.colors.textPrimary} /> : null}
-            </Pressable>
-            {index < 2 ? <Divider inset={theme.spacing.lg} /> : null}
-          </View>
-        ))}
-      </Card>
-
-      <SectionHeader title="Storage providers" />
-      <Card>
-        <View style={{ gap: theme.spacing.md }}>
-          {PROVIDER_PRESETS.map((provider) => (
-            <View key={provider.url} style={{ gap: 2 }}>
-              <AppText variant="bodyStrong">{provider.name}</AppText>
-              <AppText variant="caption" color="textSecondary">
-                {provider.note}
-              </AppText>
-            </View>
-          ))}
-          <AppText variant="caption" color="textTertiary">
-            Folio does not run its own storage. If a provider disappears, a clip may become unavailable even though your
-            archive entry remains.
-          </AppText>
-        </View>
-      </Card>
-
-      <SectionHeader title="Relays" />
       <Card>
         <View style={{ gap: theme.spacing.sm }}>
-          {DEFAULT_RELAY_LIST.map((relay) => (
-            <AppText key={relay} variant="mono" color="textSecondary">
-              {relay}
-            </AppText>
-          ))}
-          <AppText variant="caption" color="textTertiary">
-            Relay subscriptions only run while the app is open. Notifications in this build are best-effort and not
-            guaranteed after Android terminates the app.
-          </AppText>
+          {(['system', 'light', 'dark'] as ThemePreference[]).map((option) => {
+            const selected = preference === option;
+            const label = option.charAt(0).toUpperCase() + option.slice(1);
+            return (
+              <Pressable
+                key={option}
+                onPress={() => setPreference(option)}
+                accessibilityRole="button"
+                accessibilityLabel={`${label} theme`}
+                accessibilityState={{ selected }}
+                style={({ pressed }) => ({
+                  minHeight: 64,
+                  borderRadius: theme.radius.md,
+                  paddingHorizontal: theme.spacing.md,
+                  paddingVertical: theme.spacing.sm,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: theme.spacing.md,
+                  backgroundColor: selected ? theme.colors.surfaceSubtle : pressed ? theme.colors.surfaceSubtle : 'transparent',
+                })}
+              >
+                <ThemePreview option={option} />
+                <AppText variant="bodyStrong" style={{ flex: 1 }}>{label}</AppText>
+                {selected ? <Feather name="check" size={18} color={theme.colors.textPrimary} /> : null}
+              </Pressable>
+            );
+          })}
         </View>
+        <Divider />
+        <AppText variant="caption" color="textSecondary">The video viewer always uses a separate near-black cinema surface for clear playback.</AppText>
       </Card>
 
-      <SectionHeader title="Recovery" />
+      <SectionHeader title="Privacy & recovery" />
       <Card>
         <View style={{ gap: theme.spacing.md }}>
-          <AppText variant="body" color="textSecondary">
-            Your recovery key is the only backup of your identity. Folio cannot reset it or recover your account for
-            you.
-          </AppText>
-          {revealedKey ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-              <AppText variant="mono">{revealedKey}</AppText>
-            </ScrollView>
+          <AppText variant="bodyStrong">Your recovery key is irreplaceable</AppText>
+          <AppText variant="caption" color="textSecondary">Folio cannot reset it. Keep a private offline copy; anyone with it controls your identity.</AppText>
+          <Button label={recoveryKey ? 'Hide recovery key' : 'Reveal recovery key'} variant="secondary" fullWidth loading={busyAction === 'recovery'} onPress={() => (recoveryKey ? setRecoveryKey(null) : void reveal())} />
+          {recoveryKey ? (
+            <View style={{ gap: theme.spacing.md }}>
+              <View style={{ padding: theme.spacing.md, backgroundColor: theme.colors.background, borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.colors.border }}>
+                <AppText variant="mono" selectable>{recoveryKey}</AppText>
+              </View>
+              <Button label="Copy recovery key" variant="ghost" fullWidth onPress={() => void copy(recoveryKey, 'Recovery key')} />
+            </View>
           ) : null}
-          <View style={{ flexDirection: 'row', gap: theme.spacing.md }}>
-            <Button label={revealedKey ? 'Hide key' : 'Reveal key'} variant="secondary" onPress={reveal} />
-            {revealedKey ? (
-              <Button label="Copy" variant="ghost" onPress={() => Clipboard.setStringAsync(revealedKey)} />
-            ) : null}
-          </View>
+          <Divider />
+          <AppText variant="caption" color="textSecondary">Keep your originals: external media hosting can disappear. Removed members may keep media they already saved.</AppText>
         </View>
       </Card>
 
-      <SectionHeader title="Protocol lab" />
-      <Card>
-        <View style={{ gap: theme.spacing.md }}>
-          <AppText variant="caption" color="textSecondary">
-            Inspect relay and provider health, and run an on-device cryptography self-test.
-          </AppText>
-          <Button label="Open protocol lab" variant="secondary" onPress={() => router.push('/lab')} />
+      <SectionHeader title="Advanced" />
+      <Card padded={false}>
+        <View style={{ paddingHorizontal: theme.spacing.lg }}>
+          <ListRow
+            title="Protocol lab"
+            subtitle="Cryptography, relays, and storage"
+            right={<Feather name="chevron-right" size={18} color={theme.colors.textTertiary} />}
+            onPress={() => router.push('/lab')}
+            showDivider
+          />
+        </View>
+        <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: theme.spacing.lg, gap: theme.spacing.md }}>
+          <AppText variant="bodyStrong">Sync</AppText>
+          <AppText variant="caption" color="textSecondary">Checks on open and refresh. Push and background uploads are not available.</AppText>
+          <Divider />
+          <AppText variant="bodyStrong">Relays</AppText>
+          <AppText variant="mono" color="textTertiary" selectable>{DEFAULT_RELAY_LIST.join('\n')}</AppText>
         </View>
       </Card>
 
-      <View style={{ marginTop: theme.spacing.xxxl, alignItems: 'center', gap: theme.spacing.xs }}>
-        <AppText variant="caption" color="textTertiary">
-          Folio 0.1.0 · {circlesQuery.data?.length ?? 0} circles
-        </AppText>
-        <AppText variant="caption" color="textTertiary">
-          Life, as it happens.
-        </AppText>
+      <View style={{ paddingVertical: theme.spacing.xxxl, alignItems: 'center', gap: theme.spacing.xs }}>
+        <AppText style={{ fontFamily: theme.font.serifMedium, fontSize: 30 }}>folio</AppText>
+        <AppText variant="caption" color="textSecondary" italic>Life, as it happens.</AppText>
       </View>
     </ScreenScroll>
+  );
+}
+
+function ThemePreview({ option }: { option: ThemePreference }) {
+  const theme = useTheme();
+  return (
+    <View style={{ width: 42, height: 42, borderRadius: theme.radius.md, overflow: 'hidden', borderWidth: 1, borderColor: theme.colors.borderStrong, flexDirection: 'row' }}>
+      <View style={{ flex: 1, backgroundColor: option === 'dark' ? '#111111' : '#F8F7F4' }} />
+      <View style={{ flex: 1, backgroundColor: option === 'light' ? '#F8F7F4' : '#111111' }} />
+      {option === 'system' ? <View style={{ position: 'absolute', top: 0, bottom: 0, left: 20, width: 1, backgroundColor: theme.colors.borderStrong }} /> : null}
+    </View>
   );
 }

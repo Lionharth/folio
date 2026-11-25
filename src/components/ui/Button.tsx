@@ -27,10 +27,11 @@ export function Button({
   fullWidth = false,
   icon,
   style,
+  accessibilityLabel,
   ...rest
 }: ButtonProps) {
   const theme = useTheme();
-  const height = size === 'lg' ? 52 : 46;
+  const height = size === 'lg' ? 56 : theme.layout.minTouchTarget;
   const isDisabled = disabled || loading;
 
   const background =
@@ -55,13 +56,15 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel ?? label}
       accessibilityState={{ disabled: isDisabled, busy: loading }}
       disabled={isDisabled}
       style={({ pressed }) => [
         {
           minHeight: height,
           minWidth: theme.layout.minTouchTarget,
-          paddingHorizontal: theme.spacing.xxl,
+          paddingHorizontal: theme.spacing.xl,
+          paddingVertical: theme.spacing.sm,
           borderRadius: theme.radius.sm,
           borderWidth: variant === 'secondary' || variant === 'danger' ? 1 : 0,
           backgroundColor: background,
@@ -79,14 +82,12 @@ export function Button({
     >
       {loading ? (
         <ActivityIndicator size="small" color={variant === 'primary' ? theme.colors.onInk : theme.colors.textPrimary} />
-      ) : (
-        <>
-          {icon ? <View>{icon}</View> : null}
-          <AppText variant="button" color={labelColor} numberOfLines={1} style={{ flexShrink: 0 }}>
-            {label}
-          </AppText>
-        </>
-      )}
+      ) : icon ? (
+        <View>{icon}</View>
+      ) : null}
+      <AppText variant="button" color={labelColor} align="center" style={{ flexShrink: 1 }}>
+        {label}
+      </AppText>
     </Pressable>
   );
 }

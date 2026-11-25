@@ -53,7 +53,12 @@ function RootStack() {
         <Stack.Screen name="index" options={{ animation: 'none' }} />
         <Stack.Screen name="onboarding" options={{ animation: 'fade' }} />
         <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
-        <Stack.Screen name="vlog/[id]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="vlog/[id]" options={{ animation: 'fade' }} />
+        <Stack.Screen name="create" options={{ animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="capture" options={{ animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="circle/[id]" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="circle/new" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="identity/new" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="lab" options={{ animation: 'slide_from_bottom' }} />
       </Stack>
     </>

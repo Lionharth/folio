@@ -4,97 +4,86 @@ import { router } from 'expo-router';
 
 import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
-import { Screen } from '../../components/ui/Screen';
+import { InlineNotice } from '../../components/ui/Notice';
+import { ScreenScroll } from '../../components/ui/Screen';
 import { TextField } from '../../components/ui/TextField';
-import { importIdentity, readSecretKey } from '../../lib/nostr/identity';
-import { createPool, DEFAULT_DM_RELAYS } from '../../lib/nostr/relays';
-import { publishInboxRelays } from '../../lib/nostr/dm';
-import { useTheme } from '../../theme/ThemeProvider';
+import { importIdentity } from '../../lib/nostr/identity';
+import { announceInboxRelays } from '../../services/identitySetup';
+import { completeRecoveryCheckpoint } from '../../lib/security/recoveryCheckpoint';
+import { useInboxSync } from '../../stores/inboxSync';
 import { useSession } from '../../stores/session';
+import { useTheme } from '../../theme/ThemeProvider';
 
 export default function ImportIdentityScreen() {
   const theme = useTheme();
   const refresh = useSession((state) => state.refresh);
-  const [secret, setSecret] = useState('');
-  const [name, setName] = useState('');
+  const markRestoring = useInboxSync((state) => state.markRestoring);
+  const [recoveryKey, setRecoveryKey] = useState('');
+  const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const restore = async () => {
+  const importKey = async () => {
+    const trimmed = recoveryKey.trim();
+    if (!trimmed) {
+      setError('Enter your nsec recovery key.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const identity = await importIdentity(secret, name.trim() || 'Me');
+      const imported = await importIdentity(trimmed, label.trim());
+      await completeRecoveryCheckpoint().catch(() => undefined);
+      markRestoring(imported.id);
       await refresh();
-      announceInbox(identity.id).catch(() => undefined);
+      if (useSession.getState().identity?.id !== imported.id) {
+        throw new Error('The identity was imported, but secure storage could not be opened. Retry from the startup screen.');
+      }
+      void announceInboxRelays(imported.id);
       router.replace('/(tabs)/updates');
-    } catch (importError) {
-      setError(importError instanceof Error ? importError.message : 'That key could not be read');
-      await HapticsFailure();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Import failed. Check the recovery key and try again.');
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Screen>
-      <View style={{ flex: 1, paddingTop: theme.spacing.huge, gap: theme.spacing.xl }}>
+    <ScreenScroll>
+      <View style={{ paddingVertical: theme.spacing.xxl, gap: theme.spacing.xxxl }}>
+        <AppText style={{ fontFamily: theme.font.serifMedium, fontSize: 44, lineHeight: 48 }}>folio</AppText>
         <View style={{ gap: theme.spacing.sm }}>
+          <AppText variant="meta" color="textSecondary">WELCOME BACK</AppText>
           <AppText variant="title">Restore your Folio</AppText>
-          <AppText variant="body" color="textSecondary">
-            Paste the recovery key you saved when you first created your Folio. It stays on this device and is stored
-            in the system keystore.
-          </AppText>
+          <AppText variant="body" color="textSecondary">Restores your identity and circles on this device.</AppText>
         </View>
         <TextField
           label="Recovery key"
           placeholder="nsec1…"
-          value={secret}
-          onChangeText={setSecret}
+          value={recoveryKey}
+          onChangeText={(value) => { setRecoveryKey(value); setError(null); }}
           autoCapitalize="none"
           autoCorrect={false}
-          multiline
+          secureTextEntry
+          autoFocus
           error={error}
+          editable={!busy}
         />
         <TextField
           label="Display name (optional)"
-          placeholder="Your name"
-          value={name}
-          onChangeText={setName}
+          placeholder="Alex"
+          value={label}
+          onChangeText={setLabel}
+          maxLength={48}
           autoCapitalize="words"
+          editable={!busy}
         />
-        <Button
-          label="Restore"
-          size="lg"
-          fullWidth
-          loading={busy}
-          disabled={secret.trim().length === 0}
-          onPress={restore}
-        />
+        {busy ? <InlineNotice message="Opening your identity from secure storage…" /> : null}
+        <View style={{ gap: theme.spacing.sm }}>
+          <Button label="Restore" size="lg" fullWidth loading={busy} onPress={() => void importKey()} />
+          <Button label="Back" variant="ghost" fullWidth disabled={busy} onPress={() => router.back()} />
+        </View>
       </View>
-    </Screen>
+    </ScreenScroll>
   );
-}
-
-async function announceInbox(identityId: string) {
-  try {
-    const secretKey = await readSecretKey(identityId);
-    const pool = createPool({ secretKey });
-    try {
-      await publishInboxRelays(pool, secretKey, DEFAULT_DM_RELAYS);
-    } finally {
-      pool.destroy();
-    }
-  } catch {
-    // Best-effort; messaging falls back to the bootstrap relays.
-  }
-}
-
-async function HapticsFailure() {
-  try {
-    const Haptics = await import('expo-haptics');
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-  } catch {
-    // haptics are optional
-  }
 }

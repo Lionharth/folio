@@ -1,24 +1,31 @@
 import React, { useState } from 'react';
-import { Alert, Pressable, View } from 'react-native';
+import { Alert, FlatList, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import Feather from '@expo/vector-icons/Feather';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Clipboard from 'expo-clipboard';
+import { Image } from 'expo-image';
 
 import { AppText } from '../../components/ui/AppText';
 import { Avatar } from '../../components/ui/Avatar';
 import { Button } from '../../components/ui/Button';
 import { Card, Divider } from '../../components/ui/Card';
-import { ScreenScroll } from '../../components/ui/Screen';
+import { IconButton } from '../../components/ui/IconButton';
+import { SectionHeader } from '../../components/ui/Layout';
+import { InlineNotice } from '../../components/ui/Notice';
+import { Screen } from '../../components/ui/Screen';
 import { TextField } from '../../components/ui/TextField';
-import { LoadingState } from '../../components/ui/States';
-import { getCircle, listCircleMembers, setCircleMuted } from '../../lib/database/vlogs';
+import { EmptyState, ErrorState, LoadingState, VlogListSkeleton } from '../../components/ui/States';
+import { VlogRow } from '../../components/vlog/VlogRow';
 import { listContactNames } from '../../lib/database/contacts';
+import { getCircle, listCircleMembers, listVlogs } from '../../lib/database/vlogs';
 import { pubkeyFromInput, shortNpub } from '../../lib/nostr/format';
 import { readSecretKey } from '../../lib/nostr/identity';
+import { invalidateCircles, invalidateVlogs, queryKeys } from '../../lib/queryKeys';
 import { inviteMember, removeMember, resendInvite } from '../../services/circles';
 import { useSession } from '../../stores/session';
 import { useTheme } from '../../theme/ThemeProvider';
+
+const PAGE_SIZE = 12;
 
 export default function CircleDetailScreen() {
   const theme = useTheme();
@@ -26,17 +33,28 @@ export default function CircleDetailScreen() {
   const identity = useSession((state) => state.identity);
   const { id } = useLocalSearchParams<{ id: string }>();
   const [memberInput, setMemberInput] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ message: string; tone: 'neutral' | 'success' | 'warning' | 'error' } | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const contactsQuery = useQuery({ queryKey: ['contact-names'], queryFn: listContactNames });
-
+  const contactsQuery = useQuery({ queryKey: queryKeys.contacts, queryFn: listContactNames });
   const detailQuery = useQuery({
-    queryKey: ['circle', id],
+    queryKey: queryKeys.circle(identity?.pubkey, id),
     queryFn: async () => {
       const circle = await getCircle(id);
-      const members = await listCircleMembers(id);
+      const members = circle ? await listCircleMembers(id) : [];
       return { circle, members };
     },
+    enabled: Boolean(identity && id),
+  });
+  const vlogsQuery = useInfiniteQuery({
+    queryKey: [...queryKeys.vlogs(identity?.pubkey), 'circle', id],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      listVlogs(identity!.pubkey, { circleId: id, limit: PAGE_SIZE, offset: pageParam }),
+    getNextPageParam: (lastPage, pages) =>
+      lastPage.length === PAGE_SIZE ? pages.reduce((total, page) => total + page.length, 0) : undefined,
+    enabled: Boolean(identity && id && detailQuery.data?.circle),
   });
 
   const circle = detailQuery.data?.circle ?? null;
@@ -44,84 +62,80 @@ export default function CircleDetailScreen() {
   const isOwner = circle?.ownerPubkey === identity?.pubkey;
   const nameFor = (pubkey: string) =>
     pubkey === identity?.pubkey ? (identity?.label ?? 'You') : (contactsQuery.data?.[pubkey] ?? shortNpub(pubkey));
+  const vlogs = vlogsQuery.data?.pages.flat() ?? [];
 
   const invalidate = async () => {
+    if (!identity) return;
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['circle', id] }),
-      queryClient.invalidateQueries({ queryKey: ['circles-with-members'] }),
-      queryClient.invalidateQueries({ queryKey: ['circles'] }),
+      invalidateCircles(queryClient, identity.pubkey),
+      invalidateVlogs(queryClient, identity.pubkey),
     ]);
+  };
+
+  const runAction = async (key: string, action: () => Promise<{ message: string; tone?: 'success' | 'warning' }>) => {
+    if (busyAction) return;
+    setBusyAction(key);
+    setNotice(null);
+    try {
+      const result = await action();
+      await invalidate();
+      setNotice({ message: result.message, tone: result.tone ?? 'success' });
+    } catch (error) {
+      setNotice({ message: error instanceof Error ? error.message : 'The action could not be completed', tone: 'error' });
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const addMember = async () => {
     const pubkey = pubkeyFromInput(memberInput);
     if (!pubkey) {
-      Alert.alert('That invite key looks wrong', 'Use an npub or a 64-character public key.');
+      setNotice({ message: 'Use an npub or a 64-character public key.', tone: 'error' });
       return;
     }
     if (pubkey === identity?.pubkey) {
-      Alert.alert('That is you', 'You are already in every circle you own.');
+      setNotice({ message: 'That Folio ID belongs to you.', tone: 'error' });
       return;
     }
     if (!identity) return;
-    setBusy(true);
-    try {
+    await runAction('invite', async () => {
       const secretKey = await readSecretKey(identity.id);
       await inviteMember({ secretKey, circleId: id, memberPubkey: pubkey, ownerName: identity.label });
       setMemberInput('');
-      await invalidate();
-      Alert.alert('Invitation sent', 'They will see the circle on their device after their next sync.');
-    } catch (error) {
-      Alert.alert(
-        'Could not send the invitation',
-        error instanceof Error
-          ? `${error.message}\n\nNo member was added. Check your connection and try again.`
-          : 'Unknown error'
-      );
-    } finally {
-      setBusy(false);
-    }
+      return { message: 'Invitation sent. They will see it after their next sync.' };
+    });
   };
 
   const resend = async (pubkey: string) => {
     if (!identity) return;
-    setBusy(true);
-    try {
+    await runAction(`resend:${pubkey}`, async () => {
       const secretKey = await readSecretKey(identity.id);
       await resendInvite({ secretKey, circleId: id, memberPubkey: pubkey, ownerName: identity.label });
-      await invalidate();
-      Alert.alert('Invitation resent', 'They will see it after their next sync.');
-    } catch (error) {
-      Alert.alert('Could not resend', error instanceof Error ? error.message : 'Unknown error');
-    } finally {
-      setBusy(false);
-    }
+      return { message: `Invitation resent to ${nameFor(pubkey)}.` };
+    });
   };
 
   const confirmRemove = (pubkey: string) => {
     Alert.alert(
-      'Remove from circle?',
+      `Remove ${nameFor(pubkey)}?`,
       'They will not receive keys for future posts. Media they already saved stays on their device.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Remove',
           style: 'destructive',
-          onPress: async () => {
+          onPress: () => {
             if (!identity) return;
-            try {
+            void runAction(`remove:${pubkey}`, async () => {
               const secretKey = await readSecretKey(identity.id);
               const result = await removeMember({ secretKey, circleId: id, memberPubkey: pubkey });
-              await invalidate();
-              if (!result.delivered) {
-                Alert.alert(
-                  'Removed on this device',
-                  'Their device could not be reached yet. The removal will retry automatically the next time you sync.'
-                );
-              }
-            } catch (error) {
-              Alert.alert('Could not remove', error instanceof Error ? error.message : 'Unknown error');
-            }
+              return result.delivered
+                ? { message: `${nameFor(pubkey)} was removed.` }
+                : {
+                    message: `${nameFor(pubkey)} was removed here. Their device could not be reached yet; removal retries on the next sync.`,
+                    tone: 'warning' as const,
+                  };
+            });
           },
         },
       ]
@@ -129,131 +143,204 @@ export default function CircleDetailScreen() {
   };
 
   if (detailQuery.isLoading) {
+    return <Screen><LoadingState label="Opening circle" /></Screen>;
+  }
+
+  if (detailQuery.isError) {
     return (
-      <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
-        <LoadingState label="Opening circle" />
-      </View>
+      <Screen>
+        <View style={{ flex: 1, justifyContent: 'center' }}>
+          <ErrorState title="Couldn’t open circle" onAction={() => detailQuery.refetch()} />
+          <Button label="Back to Circles" variant="ghost" onPress={() => router.back()} style={{ marginTop: theme.spacing.lg }} />
+        </View>
+      </Screen>
     );
   }
 
   if (!circle) {
     return (
-      <View style={{ flex: 1, backgroundColor: theme.colors.background, padding: theme.layout.screenMargin }}>
-        <AppText variant="title">Circle not found</AppText>
-        <View style={{ marginTop: theme.spacing.lg }}>
-          <Button label="Back" variant="secondary" onPress={() => router.back()} />
+      <Screen>
+        <View style={{ flex: 1, justifyContent: 'center', gap: theme.spacing.lg }}>
+          <AppText variant="title">Circle not found</AppText>
+          <Button label="Back to Circles" variant="secondary" onPress={() => router.back()} />
         </View>
-      </View>
+      </Screen>
     );
   }
 
   return (
-    <ScreenScroll>
-      <View style={{ paddingTop: theme.spacing.md }}>
-        <Button label="Back" variant="ghost" onPress={() => router.back()} />
-      </View>
-      <View style={{ gap: theme.spacing.xs, marginTop: theme.spacing.sm }}>
-        <AppText variant="display">{circle.name}</AppText>
-        {circle.description ? (
-          <AppText variant="body" color="textSecondary">
-            {circle.description}
-          </AppText>
-        ) : null}
-        <AppText variant="meta" color="textTertiary">
-          MEMBERSHIP V{circle.membershipVersion} · {members.length} {members.length === 1 ? 'MEMBER' : 'MEMBERS'}
-        </AppText>
-      </View>
-
-      <View style={{ flexDirection: 'row', gap: theme.spacing.md, marginTop: theme.spacing.xl }}>
+    <Screen padded={false} edges={['top', 'left', 'right', 'bottom']}>
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          paddingVertical: theme.spacing.sm,
+          paddingHorizontal: theme.layout.screenMargin,
+          backgroundColor: theme.colors.background,
+          borderBottomWidth: 1,
+          borderBottomColor: theme.colors.border,
+        }}
+      >
+        <IconButton icon="arrow-left" label="Back to circles" onPress={() => router.back()} />
         <Button
-          label={circle.muted ? 'Unmute circle' : 'Mute circle'}
-          variant="secondary"
-          onPress={async () => {
-            await setCircleMuted(id, !circle.muted);
-            await invalidate();
-          }}
-        />
-        <Button
-          label="Copy circle ID"
-          variant="ghost"
-          onPress={async () => {
-            await Clipboard.setStringAsync(circle.id);
-          }}
+          label="Create"
+          icon={<AppText style={{ color: theme.colors.onInk, fontSize: 22, lineHeight: 22 }}>+</AppText>}
+          onPress={() => router.push({ pathname: '/create', params: { circleId: id } })}
         />
       </View>
-
-      <View style={{ marginTop: theme.spacing.xxxl }}>
-        <AppText variant="label" color="textSecondary">
-          MEMBERS
-        </AppText>
-        <View style={{ marginTop: theme.spacing.sm }}>
-          {members.map((member, index) => (
-            <View key={member.pubkey}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, paddingVertical: theme.spacing.lg }}>
-                <Avatar name={nameFor(member.pubkey)} />
-                <View style={{ flex: 1 }}>
-                  <AppText variant="bodyStrong">
-                    {member.pubkey === identity?.pubkey ? 'You' : nameFor(member.pubkey)}
-                  </AppText>
-                  <AppText variant="caption" color="textSecondary">
-                    {member.role} · {member.status === 'invited' ? 'invitation pending' : member.status}
-                  </AppText>
-                </View>
-                {isOwner && member.pubkey !== identity?.pubkey && member.status === 'invited' ? (
-                  <Pressable
-                    onPress={() => resend(member.pubkey)}
-                    accessibilityLabel="Resend invitation"
-                    style={{ width: theme.layout.minTouchTarget, height: theme.layout.minTouchTarget, alignItems: 'center', justifyContent: 'center' }}
-                  >
-                    <Feather name="send" size={18} color={theme.colors.textSecondary} />
-                  </Pressable>
-                ) : null}
-                {isOwner && member.pubkey !== identity?.pubkey ? (
-                  <Pressable
-                    onPress={() => confirmRemove(member.pubkey)}
-                    accessibilityLabel="Remove member"
-                    style={{ width: theme.layout.minTouchTarget, height: theme.layout.minTouchTarget, alignItems: 'center', justifyContent: 'center' }}
-                  >
-                    <Feather name="user-minus" size={18} color={theme.colors.textTertiary} />
-                  </Pressable>
-                ) : null}
-              </View>
-              {index < members.length - 1 ? <Divider /> : null}
+      <FlatList
+        style={{ flex: 1 }}
+        data={vlogs}
+        keyExtractor={(item) => item.id}
+        showsVerticalScrollIndicator={false}
+        onEndReachedThreshold={0.35}
+        onEndReached={() => {
+          if (vlogsQuery.hasNextPage && !vlogsQuery.isFetching) vlogsQuery.fetchNextPage().catch(() => undefined);
+        }}
+        ListHeaderComponent={
+          <View>
+            <View
+              style={{
+                height: 230,
+                borderRadius: theme.radius.xl,
+                overflow: 'hidden',
+                backgroundColor: theme.colors.surfaceSubtle,
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderWidth: 1,
+                borderColor: theme.colors.border,
+                marginTop: theme.spacing.sm,
+              }}
+            >
+              {circle.coverUri ? (
+                <Image source={{ uri: circle.coverUri }} contentFit="cover" transition={180} style={{ width: '100%', height: '100%' }} />
+              ) : (
+                <AppText style={{ fontFamily: theme.font.serifLight, fontSize: 112, lineHeight: 118, color: theme.colors.textSecondary }}>
+                  {circle.name.trim().charAt(0).toLowerCase() || 'f'}
+                </AppText>
+              )}
             </View>
-          ))}
-        </View>
-      </View>
 
-      {isOwner ? (
-        <Card style={{ marginTop: theme.spacing.xxl }}>
-          <View style={{ gap: theme.spacing.md }}>
-            <AppText variant="bodyStrong">Invite a friend</AppText>
-            <AppText variant="caption" color="textSecondary">
-              Ask them for their Folio ID from Profile, then add it here. The invitation is sent privately; the circle
-              appears on their device after they sync and accept. Media shared before they joined is not resent.
-            </AppText>
-            <TextField
-              label="Folio ID"
-              placeholder="npub1…"
-              value={memberInput}
-              onChangeText={setMemberInput}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            <Button label="Send invitation" variant="secondary" loading={busy} onPress={addMember} />
+            <View style={{ gap: theme.spacing.sm, marginTop: theme.spacing.xl }}>
+              <AppText variant="display">{circle.name}</AppText>
+              <AppText variant="caption" color="textSecondary">
+                {members.length} {members.length === 1 ? 'member' : 'members'}
+              </AppText>
+              {circle.description ? <AppText variant="body" color="textSecondary">{circle.description}</AppText> : null}
+            </View>
+
+            {notice ? <View style={{ marginTop: theme.spacing.lg }}><InlineNotice message={notice.message} tone={notice.tone} /></View> : null}
+
+            <SectionHeader title="People" />
+            <Card padded={false}>
+              {members.map((member, index) => (
+                <View key={member.pubkey}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, padding: theme.spacing.md }}>
+                    <Avatar name={nameFor(member.pubkey)} />
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <AppText variant="bodyStrong">{member.pubkey === identity?.pubkey ? 'You' : nameFor(member.pubkey)}</AppText>
+                      <AppText variant="caption" color="textSecondary">
+                        {member.status === 'invited' ? 'Invitation pending' : member.role}
+                      </AppText>
+                    </View>
+                    {isOwner && member.pubkey !== identity?.pubkey && member.status === 'invited' ? (
+                      <IconButton
+                        icon="send"
+                        label={`Resend invitation to ${nameFor(member.pubkey)}`}
+                        loading={busyAction === `resend:${member.pubkey}`}
+                        disabled={Boolean(busyAction)}
+                        onPress={() => void resend(member.pubkey)}
+                      />
+                    ) : null}
+                    {isOwner && member.pubkey !== identity?.pubkey ? (
+                      <IconButton
+                        icon="user-minus"
+                        label={`Remove ${nameFor(member.pubkey)}`}
+                        tone="danger"
+                        disabled={Boolean(busyAction)}
+                        onPress={() => confirmRemove(member.pubkey)}
+                      />
+                    ) : null}
+                  </View>
+                  {index < members.length - 1 ? <Divider inset={theme.spacing.md} /> : null}
+                </View>
+              ))}
+            </Card>
+
+            {isOwner ? (
+              <Card style={{ marginTop: theme.spacing.lg }}>
+                <View style={{ gap: theme.spacing.md }}>
+                  <AppText variant="headline">Invite someone</AppText>
+                  <TextField
+                    label="Folio ID"
+                    placeholder="npub1…"
+                    value={memberInput}
+                    onChangeText={setMemberInput}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!busyAction}
+                  />
+                  <Button label="Invite" variant="secondary" loading={busyAction === 'invite'} disabled={Boolean(busyAction)} onPress={() => void addMember()} />
+                </View>
+              </Card>
+            ) : null}
+
+            <View style={{ marginTop: theme.spacing.lg }}>
+              <Button label={showAdvanced ? 'Hide advanced' : 'Advanced'} variant="ghost" accessibilityState={{ expanded: showAdvanced }} onPress={() => setShowAdvanced((value) => !value)} />
+            </View>
+
+            {showAdvanced ? (
+              <Card subtle style={{ marginTop: theme.spacing.lg }}>
+                <View style={{ gap: theme.spacing.md }}>
+                  <AppText variant="caption" color="textSecondary">Membership version {circle.membershipVersion}</AppText>
+                  <AppText variant="mono" color="textSecondary" selectable>{circle.id}</AppText>
+                  <Button
+                    label="Copy internal circle ID"
+                    variant="secondary"
+                    onPress={() => {
+                      void Clipboard.setStringAsync(circle.id).then(() => setNotice({ message: 'Internal circle ID copied', tone: 'neutral' }));
+                    }}
+                  />
+                  <AppText variant="caption" color="textTertiary">Removing a member stops future keys. Saved media stays on their device.</AppText>
+                </View>
+              </Card>
+            ) : null}
+
+            <SectionHeader title="Moments" />
           </View>
-        </Card>
-      ) : null}
-
-      <View style={{ marginTop: theme.spacing.xxl, gap: theme.spacing.sm }}>
-        <AppText variant="label" color="textSecondary">
-          A NOTE ON REMOVAL
-        </AppText>
-        <AppText variant="caption" color="textTertiary">
-          Removing someone stops future keys from reaching them. It cannot erase videos they already downloaded, and
-          Folio does not pretend otherwise.
-        </AppText>
-      </View>
-    </ScreenScroll>
+        }
+        renderItem={({ item, index }) => (
+          <VlogRow vlog={item} authorLabel={nameFor(item.authorPubkey)} variant={index === 0 ? 'hero' : 'standard'} />
+        )}
+        ListEmptyComponent={
+          vlogsQuery.isLoading ? (
+            <VlogListSkeleton />
+          ) : vlogsQuery.isError ? (
+            <ErrorState title="Couldn’t open moments" onAction={() => vlogsQuery.refetch()} />
+          ) : (
+            <EmptyState
+              title="No moments yet"
+              actionLabel="Create"
+              onAction={() => router.push({ pathname: '/create', params: { circleId: id } })}
+            />
+          )
+        }
+        ListFooterComponent={
+          vlogsQuery.isFetchingNextPage ? (
+            <LoadingState label="Opening more moments" />
+          ) : vlogsQuery.isError && vlogs.length > 0 ? (
+            <ErrorState
+              title="Couldn’t load more"
+              onAction={() => {
+                if (vlogsQuery.hasNextPage) void vlogsQuery.fetchNextPage();
+                else void vlogsQuery.refetch();
+              }}
+            />
+          ) : undefined
+        }
+        contentContainerStyle={{ paddingHorizontal: theme.layout.screenMargin, paddingBottom: theme.spacing.huge, flexGrow: 1 }}
+      />
+    </Screen>
   );
 }

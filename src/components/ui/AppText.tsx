@@ -13,12 +13,22 @@ export interface AppTextProps extends TextProps {
   italic?: boolean;
 }
 
-export function AppText({ variant = 'body', color = 'textPrimary', align, italic, style, ...rest }: AppTextProps) {
+export function AppText({
+  variant = 'body',
+  color = 'textPrimary',
+  align,
+  italic,
+  style,
+  accessibilityRole,
+  ...rest
+}: AppTextProps) {
   const theme = useTheme();
   const resolvedColor = (theme.colors as unknown as Record<string, string>)[color] ?? color;
+  const heading = variant === 'display' || variant === 'title' || variant === 'headline';
   return (
     <Text
       {...rest}
+      accessibilityRole={accessibilityRole ?? (heading ? 'header' : undefined)}
       style={[
         theme.type[variant],
         { color: resolvedColor },

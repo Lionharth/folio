@@ -83,13 +83,18 @@ Local Android builds on Windows must live at a short path; see
 
 ## Design
 
-Editorial and quiet: Cormorant Garamond for the wordmark, titles and vlog
-titles; Manrope for everything functional. The launcher icon is the serif "f"
-generated from the bundled font (`assets/images/icon.png`; regenerate with
-ffmpeg or any design tool after changing the wordmark). Warm paper background, ink-black
-primary, no accent colours, 24 dp margins, 4 dp spacing. Light and dark themes
-are designed separately, not inverted. All tokens live in
-`src/theme/tokens.ts`.
+Cinematic editorial: Cormorant Garamond for the wordmark and editorial titles;
+Manrope for functional UI. Large media covers, strong scale contrast and quiet
+metadata replace generic feed rows. Updates is a finite unread inbox; Archive is
+the complete chronological history. Four tabs (Updates, Circles, Archive,
+Profile) surround a central full-screen Create action.
+
+The launcher icon is the serif "f" generated from the bundled font
+(`assets/images/icon.png`). Warm paper, ink-black primary, no decorative accent
+colours, 24 dp margins and a 4 dp spacing scale. Light and dark themes are
+designed separately, while the layered video viewer deliberately uses an
+always-dark cinema surface in both. Player/sheet motion has reduced-motion
+alternatives. All visual and motion tokens live in `src/theme/tokens.ts`.
 
 ## Licence
 

@@ -28,17 +28,17 @@ export const palettes: Record<ColorScheme, Palette> = {
     surfaceSubtle: '#EFEEE9',
     surfaceRaised: '#FFFFFF',
     textPrimary: '#171717',
-    textSecondary: '#77746F',
-    textTertiary: '#9A968F',
+    textSecondary: '#65615B',
+    textTertiary: '#716C65',
     border: '#E8E6E1',
-    borderStrong: '#D6D3CC',
+    borderStrong: '#C9C5BC',
     ink: '#171717',
     onInk: '#F8F7F4',
     danger: '#8C3B2E',
     dangerSurface: '#F6EDEA',
     success: '#3F6B4F',
     overlay: 'rgba(23, 23, 23, 0.55)',
-    scrim: 'rgba(248, 247, 244, 0.92)',
+    scrim: 'rgba(248, 247, 244, 0.94)',
   },
   dark: {
     background: '#111111',
@@ -46,17 +46,17 @@ export const palettes: Record<ColorScheme, Palette> = {
     surfaceSubtle: '#252523',
     surfaceRaised: '#202020',
     textPrimary: '#F5F4F0',
-    textSecondary: '#A09E99',
-    textTertiary: '#7C7A75',
+    textSecondary: '#AAA69F',
+    textTertiary: '#99958E',
     border: '#30302E',
-    borderStrong: '#3D3D3A',
+    borderStrong: '#484743',
     ink: '#F5F4F0',
     onInk: '#111111',
-    danger: '#D98B7C',
+    danger: '#E09A8B',
     dangerSurface: '#2A1E1C',
-    success: '#8FB79B',
+    success: '#9BC2A7',
     overlay: 'rgba(0, 0, 0, 0.65)',
-    scrim: 'rgba(17, 17, 17, 0.92)',
+    scrim: 'rgba(17, 17, 17, 0.94)',
   },
 };
 
@@ -80,8 +80,23 @@ export const layout = {
   minTouchTarget: 48,
   icon: 22,
   iconLarge: 24,
-  tabBarHeight: 60,
+  tabBarHeight: 72,
   maxContentWidth: 640,
+} as const;
+
+export const media = {
+  heroAspect: 4 / 3,
+  standardAspect: 16 / 10,
+  gridAspect: 4 / 5,
+  viewerCollapsedAspect: 16 / 12,
+} as const;
+
+export const motion = {
+  none: 0,
+  fast: 140,
+  standard: 220,
+  enter: 320,
+  sheet: 280,
 } as const;
 
 export const radius = {
@@ -93,10 +108,7 @@ export const radius = {
   pill: 999,
 } as const;
 
-/**
- * Both families are bundled as assets; no runtime download.
- * See DEVELOPMENT.md for the licensing note.
- */
+/** Both families are bundled as assets; no runtime download. */
 export const fontFamily = {
   serifLight: 'CormorantGaramond_300Light',
   serif: 'CormorantGaramond_400Regular',
@@ -110,17 +122,17 @@ export const fontFamily = {
 } as const;
 
 export const typeScale = {
-  display: { fontFamily: fontFamily.serifMedium, fontSize: 40, lineHeight: 44, letterSpacing: -0.4 },
-  title: { fontFamily: fontFamily.serifMedium, fontSize: 30, lineHeight: 34, letterSpacing: -0.2 },
-  headline: { fontFamily: fontFamily.serif, fontSize: 23, lineHeight: 29, letterSpacing: -0.1 },
-  vlogTitle: { fontFamily: fontFamily.serifSemiBold, fontSize: 21, lineHeight: 26 },
-  body: { fontFamily: fontFamily.sans, fontSize: 15.5, lineHeight: 23 },
-  bodyStrong: { fontFamily: fontFamily.sansMedium, fontSize: 15.5, lineHeight: 23 },
+  display: { fontFamily: fontFamily.serifMedium, fontSize: 46, lineHeight: 48, letterSpacing: -0.6 },
+  title: { fontFamily: fontFamily.serifMedium, fontSize: 34, lineHeight: 38, letterSpacing: -0.3 },
+  headline: { fontFamily: fontFamily.serif, fontSize: 24, lineHeight: 30, letterSpacing: -0.1 },
+  vlogTitle: { fontFamily: fontFamily.serifSemiBold, fontSize: 24, lineHeight: 29 },
+  body: { fontFamily: fontFamily.sans, fontSize: 16, lineHeight: 24 },
+  bodyStrong: { fontFamily: fontFamily.sansMedium, fontSize: 16, lineHeight: 24 },
   callout: { fontFamily: fontFamily.sansMedium, fontSize: 14, lineHeight: 20 },
-  label: { fontFamily: fontFamily.sansSemiBold, fontSize: 12.5, lineHeight: 16, letterSpacing: 0.2 },
-  caption: { fontFamily: fontFamily.sans, fontSize: 12.5, lineHeight: 17 },
-  meta: { fontFamily: fontFamily.sansMedium, fontSize: 11.5, lineHeight: 15, letterSpacing: 0.35 },
-  button: { fontFamily: fontFamily.sansSemiBold, fontSize: 14.5, lineHeight: 18, letterSpacing: 0.1 },
+  label: { fontFamily: fontFamily.sansSemiBold, fontSize: 12.5, lineHeight: 17, letterSpacing: 0.2 },
+  caption: { fontFamily: fontFamily.sans, fontSize: 13, lineHeight: 18 },
+  meta: { fontFamily: fontFamily.sansMedium, fontSize: 12, lineHeight: 16, letterSpacing: 0.25 },
+  button: { fontFamily: fontFamily.sansSemiBold, fontSize: 14.5, lineHeight: 19, letterSpacing: 0.1 },
   mono: {
     fontFamily: Platform.select({ android: 'monospace', ios: 'Menlo', default: 'monospace' }),
     fontSize: 12,

@@ -27,7 +27,9 @@ export function Screen({
   const theme = useTheme();
   return (
     <SafeAreaView edges={edges} style={[{ flex: 1, backgroundColor: theme.colors.background }, style]} {...rest}>
-      <View style={{ flex: 1, paddingHorizontal: padded ? theme.layout.screenMargin : 0 }}>{children}</View>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={{ flex: 1, paddingHorizontal: padded ? theme.layout.screenMargin : 0 }}>{children}</View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -55,6 +57,7 @@ export function ScreenScroll({
       <SafeAreaView edges={['top', 'left', 'right']} style={{ flex: 1 }}>
         <ScrollView
           keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             {
               paddingHorizontal: padded ? theme.layout.screenMargin : 0,
@@ -65,7 +68,9 @@ export function ScreenScroll({
           ]}
           {...rest}
         >
-          {children}
+          <View style={{ width: '100%', maxWidth: theme.layout.maxContentWidth, alignSelf: 'center', flexGrow: 1 }}>
+            {children}
+          </View>
         </ScrollView>
       </SafeAreaView>
     </KeyboardAvoidingView>

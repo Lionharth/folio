@@ -1,11 +1,13 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { View } from 'react-native';
+import { router } from 'expo-router';
 
 import { AppText } from '../components/ui/AppText';
 import { Button } from '../components/ui/Button';
 import { Card, Divider } from '../components/ui/Card';
+import { IconButton } from '../components/ui/IconButton';
+import { PageHeader } from '../components/ui/Layout';
 import { ScreenScroll } from '../components/ui/Screen';
-import { SectionHeader } from '../components/ui/Layout';
 import { DEFAULT_RELAY_LIST, PROVIDER_PRESETS } from '../constants/providers';
 import { BlossomClient } from '../lib/blossom/client';
 import { expoAesGcm, expoRandom } from '../lib/crypto/expoAes';
@@ -19,10 +21,26 @@ interface CheckResult {
   detail: string;
 }
 
+type Section = 'crypto' | 'nostr' | 'blossom';
+type CheckState = 'idle' | 'running' | 'ok' | 'error';
+type Status = Record<Section, CheckState>;
+type Errors = Partial<Record<Section, string>>;
+
 function relayHttpUrl(relay: string): string {
   return relay.replace(/^wss:\/\//, 'https://').replace(/^ws:\/\//, 'http://');
 }
 
+async function withTimeout<T>(promise: Promise<T>, label: string, milliseconds = 15_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${milliseconds / 1000} seconds`)), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function computeCryptoResult(): Promise<CheckResult> {
   const started = Date.now();
@@ -40,11 +58,7 @@ async function computeCryptoResult(): Promise<CheckResult> {
       detail: ok ? `Verified in ${Date.now() - started} ms` : 'Decrypted bytes differ from plaintext',
     };
   } catch (error) {
-    return {
-      label: 'AES-256-GCM round trip',
-      ok: false,
-      detail: error instanceof Error ? error.message : 'Unknown error',
-    };
+    return { label: 'AES-256-GCM round trip', ok: false, detail: error instanceof Error ? error.message : 'Unknown error' };
   }
 }
 
@@ -53,13 +67,13 @@ async function computeRelayResults(): Promise<CheckResult[]> {
     DEFAULT_RELAY_LIST.map(async (relay): Promise<CheckResult> => {
       const started = Date.now();
       try {
-        const response = await fetch(relayHttpUrl(relay), {
-          headers: { Accept: 'application/nostr+json' },
-        });
+        const response = await withTimeout(
+          fetch(relayHttpUrl(relay), { headers: { Accept: 'application/nostr+json' } }),
+          `${relay} NIP-11`,
+          8_000
+        );
         const latency = Date.now() - started;
-        if (!response.ok) {
-          return { label: relay, ok: false, detail: `HTTP ${response.status} · ${latency} ms` };
-        }
+        if (!response.ok) return { label: relay, ok: false, detail: `HTTP ${response.status} · ${latency} ms` };
         const info = (await response.json().catch(() => ({}))) as { name?: string; software?: string };
         return {
           label: relay,
@@ -76,16 +90,21 @@ async function computeRelayResults(): Promise<CheckResult[]> {
 async function computeProviderResults(): Promise<CheckResult[]> {
   return Promise.all(
     PROVIDER_PRESETS.map(async (preset): Promise<CheckResult> => {
-      const client = new BlossomClient(preset.url);
-      const health = await client.health();
-      const discovery = await client.discover();
-      return {
-        label: `${preset.name} (${preset.url})`,
-        ok: health.ok,
-        detail: health.ok
-          ? `UP · ${health.latencyMs ?? '?'} ms · PUT ${discovery.put ? 'yes' : 'no'} · HEAD ${discovery.head ? 'yes' : 'no'}`
-          : 'Unreachable',
-      };
+      const label = `${preset.name} (${preset.url})`;
+      try {
+        const client = new BlossomClient(preset.url);
+        const health = await withTimeout(client.health(), `${preset.name} health`, 8_000);
+        const discovery = await withTimeout(client.discover(), `${preset.name} discovery`, 8_000);
+        return {
+          label,
+          ok: health.ok,
+          detail: health.ok
+            ? `UP · ${health.latencyMs ?? '?'} ms · PUT ${discovery.put ? 'yes' : 'no'} · HEAD ${discovery.head ? 'yes' : 'no'}`
+            : 'Unreachable',
+        };
+      } catch (error) {
+        return { label, ok: false, detail: error instanceof Error ? error.message : 'Unreachable' };
+      }
     })
   );
 }
@@ -95,101 +114,101 @@ export default function LabScreen() {
   const [cryptoResult, setCryptoResult] = useState<CheckResult | null>(null);
   const [relayResults, setRelayResults] = useState<CheckResult[] | null>(null);
   const [providerResults, setProviderResults] = useState<CheckResult[] | null>(null);
-  const [busy, setBusy] = useState(true);
+  const [status, setStatus] = useState<Status>({ crypto: 'idle', nostr: 'idle', blossom: 'idle' });
+  const [errors, setErrors] = useState<Errors>({});
+  const running = useRef(false);
 
   const runAll = useCallback(async () => {
-    setBusy(true);
-    const [crypto, relays, providers] = await Promise.all([
-      computeCryptoResult(),
-      computeRelayResults(),
-      computeProviderResults(),
+    if (running.current) return;
+    running.current = true;
+    setStatus({ crypto: 'running', nostr: 'running', blossom: 'running' });
+    setErrors({});
+
+    const runSection = async (section: Section, check: () => Promise<void>) => {
+      try {
+        await withTimeout(check(), section);
+        setStatus((current) => ({ ...current, [section]: 'ok' }));
+      } catch (error) {
+        setStatus((current) => ({ ...current, [section]: 'error' }));
+        setErrors((current) => ({ ...current, [section]: error instanceof Error ? error.message : 'Check failed' }));
+      }
+    };
+
+    await Promise.all([
+      runSection('crypto', async () => {
+        const result = await computeCryptoResult();
+        setCryptoResult(result);
+        if (!result.ok) throw new Error(result.detail);
+      }),
+      runSection('nostr', async () => setRelayResults(await computeRelayResults())),
+      runSection('blossom', async () => setProviderResults(await computeProviderResults())),
     ]);
-    setCryptoResult(crypto);
-    setRelayResults(relays);
-    setProviderResults(providers);
-    setBusy(false);
+    running.current = false;
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    Promise.all([computeCryptoResult(), computeRelayResults(), computeProviderResults()])
-      .then(([crypto, relays, providers]) => {
-        if (cancelled) return;
-        setCryptoResult(crypto);
-        setRelayResults(relays);
-        setProviderResults(providers);
-        setBusy(false);
-      })
-      .catch(() => {
-        if (!cancelled) setBusy(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void runAll();
+  }, [runAll]);
+
+  const busy = Object.values(status).some((value) => value === 'running');
 
   return (
     <ScreenScroll>
-      <View style={{ paddingTop: theme.spacing.xl, gap: theme.spacing.xs }}>
-        <AppText variant="title">Protocol lab</AppText>
-        <AppText variant="caption" color="textSecondary">
-          Honest diagnostics: what works on this device and network right now.
-        </AppText>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: theme.spacing.sm }}>
+        <IconButton icon="arrow-left" label="Back to Profile" onPress={() => router.back()} />
+        <AppText variant="meta" color="textSecondary">DEVELOPER TOOL</AppText>
+        <View style={{ width: theme.layout.minTouchTarget }} />
       </View>
-
-      <SectionHeader
-        title="Cryptography"
-        action={
-          busy ? <ActivityIndicator size="small" color={theme.colors.textSecondary} /> : <Button label="Run again" variant="ghost" onPress={() => { runAll().catch(() => undefined); }} />
-        }
-      />
-      <Card>
-        {cryptoResult ? (
-          <ResultRow result={cryptoResult} />
-        ) : (
-          <AppText variant="caption" color="textSecondary">
-            Running…
-          </AppText>
-        )}
-        <View style={{ marginTop: theme.spacing.md }}>
-          <AppText variant="caption" color="textTertiary">
-            Uses the platform AES implementation through expo-crypto with a fresh random key and nonce. This checks the
-            primitive, not the full media pipeline.
-          </AppText>
-        </View>
-      </Card>
-
-      <SectionHeader title="Relays (NIP-11)" />
-      <Card>
-        {relayResults ? relayResults.map((result) => <ResultRow key={result.label} result={result} />) : <AppText variant="caption" color="textSecondary">Checking…</AppText>}
-        <View style={{ marginTop: theme.spacing.md }}>
-          <AppText variant="caption" color="textTertiary">
-            Reachability here does not guarantee relay policy accepts gift wraps or serves them after NIP-42 auth.
-          </AppText>
-        </View>
-      </Card>
-
-      <SectionHeader title="Blossom providers" />
-      <Card>
-        {providerResults ? (
-          providerResults.map((result) => <ResultRow key={result.label} result={result} />)
-        ) : (
-          <AppText variant="caption" color="textSecondary">
-            Checking…
-          </AppText>
-        )}
-        <View style={{ marginTop: theme.spacing.md, gap: theme.spacing.xs }}>
-          <AppText variant="caption" color="textTertiary">
-            Observed limits from the Phase 1 probe. Free tiers change without notice.
-          </AppText>
+      <PageHeader title="Protocol lab" />
+      <View style={{ gap: theme.spacing.md, paddingBottom: theme.spacing.xxxl }}>
+        <CheckCard title="Cryptography" state={status.crypto} error={errors.crypto}>
+          {cryptoResult ? <ResultRow result={cryptoResult} /> : null}
+          <AppText variant="caption" color="textTertiary">Uses the platform AES implementation with a fresh random key and nonce. This checks the primitive, not the full media pipeline.</AppText>
+        </CheckCard>
+        <CheckCard title="Relays · NIP-11" state={status.nostr} error={errors.nostr}>
+          {relayResults?.map((result) => <ResultRow key={result.label} result={result} />)}
+          <AppText variant="caption" color="textTertiary">Reachability does not guarantee relay policy accepts gift wraps or serves them after NIP-42 auth.</AppText>
+        </CheckCard>
+        <CheckCard title="Encrypted storage · Blossom" state={status.blossom} error={errors.blossom}>
+          {providerResults?.map((result) => <ResultRow key={result.label} result={result} />)}
+          <AppText variant="caption" color="textTertiary">Observed limits come from earlier probes. Free tiers can change without notice.</AppText>
           {PROVIDER_PRESETS.map((preset) => (
             <AppText key={preset.url} variant="caption" color="textTertiary">
               {preset.name}: {preset.observedMaxBytes ? `${formatBytes(preset.observedMaxBytes)} advertised` : 'no advertised limit seen'}
             </AppText>
           ))}
-        </View>
-      </Card>
+        </CheckCard>
+        <Button label={busy ? 'Running all checks' : 'Run all checks again'} loading={busy} fullWidth onPress={() => void runAll()} />
+      </View>
     </ScreenScroll>
+  );
+}
+
+function CheckCard({
+  title,
+  state,
+  error,
+  children,
+}: {
+  title: string;
+  state: CheckState;
+  error?: string;
+  children?: React.ReactNode;
+}) {
+  const theme = useTheme();
+  return (
+    <Card>
+      <View style={{ gap: theme.spacing.md }}>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: theme.spacing.md }}>
+          <AppText variant="bodyStrong" style={{ flex: 1 }}>{title}</AppText>
+          <AppText variant="caption" color={state === 'error' ? 'danger' : state === 'ok' ? 'success' : 'textSecondary'} accessibilityLiveRegion="polite">
+            {state === 'running' ? 'Checking…' : state === 'ok' ? 'Complete' : state === 'error' ? 'Timed out / failed' : 'Waiting'}
+          </AppText>
+        </View>
+        {error ? <AppText variant="caption" color="danger">{error}</AppText> : null}
+        {children}
+      </View>
+    </Card>
   );
 }
 
@@ -198,21 +217,10 @@ function ResultRow({ result }: { result: CheckResult }) {
   return (
     <View style={{ paddingVertical: theme.spacing.sm }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
-        <View
-          style={{
-            width: 7,
-            height: 7,
-            borderRadius: 4,
-            backgroundColor: result.ok ? theme.colors.success : result.ok === false ? theme.colors.danger : theme.colors.textTertiary,
-          }}
-        />
-        <AppText variant="bodyStrong" style={{ flex: 1 }} numberOfLines={1}>
-          {result.label}
-        </AppText>
+        <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: result.ok ? theme.colors.success : result.ok === false ? theme.colors.danger : theme.colors.textTertiary }} />
+        <AppText variant="bodyStrong" style={{ flex: 1 }}>{result.label}</AppText>
       </View>
-      <AppText variant="caption" color="textSecondary" style={{ marginLeft: theme.spacing.lg }}>
-        {result.detail}
-      </AppText>
+      <AppText variant="caption" color="textSecondary" style={{ marginLeft: theme.spacing.lg }}>{result.detail}</AppText>
       <Divider inset={theme.spacing.lg} />
     </View>
   );
