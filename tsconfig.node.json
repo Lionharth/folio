@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "types": [
+      "node"
+    ],
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "esModuleInterop": true
+  },
+  "include": [
+    "tests/**/*.ts",
+    "scripts/**/*.ts",
+    "src/lib/crypto/bytes.ts",
+    "src/lib/crypto/chunkedFile.ts",
+    "src/lib/nostr/dm.ts",
+    "src/lib/nostr/relays.ts",
+    "src/lib/blossom/auth.ts"
+  ]
+}

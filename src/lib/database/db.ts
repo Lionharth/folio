@@ -1,0 +1,191 @@
+import * as SQLite from 'expo-sqlite';
+
+const DATABASE_NAME = 'folio.db';
+const SCHEMA_VERSION = 2;
+
+let database: SQLite.SQLiteDatabase | null = null;
+let opening: Promise<SQLite.SQLiteDatabase> | null = null;
+
+const MIGRATION_1 = `
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS relays (
+  url TEXT PRIMARY KEY NOT NULL,
+  read INTEGER NOT NULL DEFAULT 1,
+  write INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'unknown',
+  last_checked_at INTEGER,
+  last_error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS media_providers (
+  url TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  upload_enabled INTEGER NOT NULL DEFAULT 1,
+  max_upload_bytes INTEGER,
+  last_checked_at INTEGER,
+  health TEXT NOT NULL DEFAULT 'unknown'
+);
+
+CREATE TABLE IF NOT EXISTS circles (
+  id TEXT PRIMARY KEY NOT NULL,
+  owner_pubkey TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  cover_uri TEXT,
+  membership_version INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  muted INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS circle_members (
+  circle_id TEXT NOT NULL,
+  pubkey TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member',
+  status TEXT NOT NULL DEFAULT 'active',
+  joined_at INTEGER NOT NULL,
+  PRIMARY KEY (circle_id, pubkey),
+  FOREIGN KEY (circle_id) REFERENCES circles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS vlogs (
+  id TEXT PRIMARY KEY NOT NULL,
+  remote_id TEXT NOT NULL,
+  rumor_id TEXT,
+  author_pubkey TEXT NOT NULL,
+  circle_id TEXT,
+  circle_name TEXT,
+  title TEXT,
+  description TEXT,
+  cover_uri TEXT,
+  created_at INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'published',
+  unread INTEGER NOT NULL DEFAULT 1,
+  is_favourite INTEGER NOT NULL DEFAULT 0,
+  format TEXT,
+  metadata TEXT
+);
+
+CREATE INDEX IF NOT EXISTS vlogs_created_at_idx ON vlogs (created_at DESC);
+CREATE INDEX IF NOT EXISTS vlogs_circle_idx ON vlogs (circle_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS clips (
+  id TEXT PRIMARY KEY NOT NULL,
+  vlog_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  provider TEXT,
+  url TEXT,
+  mirrors TEXT,
+  encrypted_sha256 TEXT NOT NULL,
+  plaintext_sha256 TEXT,
+  encrypted_size INTEGER NOT NULL,
+  plaintext_size INTEGER,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  mime_type TEXT NOT NULL DEFAULT 'video/mp4',
+  width INTEGER,
+  height INTEGER,
+  local_uri TEXT,
+  state TEXT NOT NULL DEFAULT 'remote',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (vlog_id) REFERENCES vlogs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS clips_vlog_idx ON clips (vlog_id, position);
+
+CREATE TABLE IF NOT EXISTS drafts (
+  id TEXT PRIMARY KEY NOT NULL,
+  title TEXT,
+  description TEXT,
+  circle_id TEXT,
+  cover_uri TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'editing'
+);
+
+CREATE TABLE IF NOT EXISTS draft_clips (
+  id TEXT PRIMARY KEY NOT NULL,
+  draft_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  local_uri TEXT NOT NULL,
+  mime_type TEXT NOT NULL DEFAULT 'video/mp4',
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  width INTEGER,
+  height INTEGER,
+  size_bytes INTEGER,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS draft_clips_draft_idx ON draft_clips (draft_id, position);
+
+CREATE TABLE IF NOT EXISTS upload_jobs (
+  id TEXT PRIMARY KEY NOT NULL,
+  clip_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'queued',
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  progress REAL NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS favourites (
+  vlog_id TEXT PRIMARY KEY NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`;
+
+const MIGRATION_2 = `
+ALTER TABLE vlogs ADD COLUMN viewer_pubkey TEXT NOT NULL DEFAULT '';
+UPDATE vlogs SET viewer_pubkey = author_pubkey WHERE viewer_pubkey = '';
+CREATE INDEX IF NOT EXISTS vlogs_viewer_idx ON vlogs (viewer_pubkey, created_at DESC);
+`;
+
+async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
+  await db.execAsync('PRAGMA journal_mode = WAL;');
+  await db.execAsync('PRAGMA foreign_keys = ON;');
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version;');
+  const current = row?.user_version ?? 0;
+  if (current < 1) {
+    await db.execAsync(MIGRATION_1);
+  }
+  if (current < 2) {
+    // Fresh databases already have viewer_pubkey from MIGRATION_1? No: only
+    // MIGRATION_1 ran, so add the column in both fresh and upgrade paths.
+    await db.execAsync(MIGRATION_2).catch(async (error) => {
+      if (String(error).includes('duplicate column')) return;
+      throw error;
+    });
+  }
+  await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION};`);
+}
+
+export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
+  if (database) return database;
+  if (opening) return opening;
+  opening = (async () => {
+    const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
+    await migrate(db);
+    database = db;
+    opening = null;
+    return db;
+  })();
+  return opening;
+}
+
+export async function resetDatabaseForTests(): Promise<void> {
+  if (!database) return;
+  await database.closeAsync();
+  database = null;
+  opening = null;
+}
+
+export type Database = SQLite.SQLiteDatabase;
