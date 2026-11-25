@@ -1,29 +1,34 @@
-import { Directory, File, FileMode, Paths } from 'expo-file-system';
+import { File, FileMode } from 'expo-file-system';
 import { randomUUID } from 'expo-crypto';
 
 import { BlossomClient } from '../lib/blossom/client';
 import { base64ToBytes, bytesToBase64 } from '../lib/crypto/bytes';
 import { generateMediaKey } from '../lib/crypto/expoAes';
 import { encryptMediaFile } from '../lib/crypto/mediaFiles';
+import { mediaDirectory, workDirectory } from '../lib/media/paths';
 import { createPool, DEFAULT_DM_RELAYS } from '../lib/nostr/relays';
 import {
   publishKeyMessage,
   resolveInboxRelays,
   wrapKeyMessage,
   type VlogKeyPayload,
+  type VlogThumbnailPayload,
 } from '../lib/nostr/dm';
 import { getPublicKey } from 'nostr-tools/pure';
 import { getDatabase } from '../lib/database/db';
 import { listCircleMembers, upsertVlog } from '../lib/database/vlogs';
-import { saveMediaKey } from '../lib/security/mediaKeys';
+import { saveMediaKey, saveThumbnailKey } from '../lib/security/mediaKeys';
+import { prepareVideoForPublish, storeThumbnail } from './media';
 import type { Circle, Clip, Vlog } from '../types/models';
 
 export type PublishStage =
   | 'preparing'
+  | 'compressing'
   | 'encrypting'
   | 'checking-provider'
   | 'uploading'
   | 'verifying'
+  | 'thumbnail'
   | 'distributing'
   | 'saving';
 
@@ -42,6 +47,7 @@ export interface PublishVlogInput {
   durationMs: number;
   width?: number;
   height?: number;
+  authorName?: string;
   title?: string;
   description?: string;
   providerUrl: string;
@@ -53,22 +59,11 @@ export interface PublishVlogResult {
   clipId: string;
   rumorId: string;
   url: string;
+  coverUri: string | null;
   encryptedSha256: string;
   encryptedSize: number;
   plaintextSize: number;
   relays: string[];
-}
-
-function mediaDirectory(): Directory {
-  const dir = new Directory(Paths.document, 'folio-media');
-  if (!dir.exists) dir.create();
-  return dir;
-}
-
-function cacheDirectory(): Directory {
-  const dir = new Directory(Paths.cache, 'folio-work');
-  if (!dir.exists) dir.create();
-  return dir;
 }
 
 async function copyIntoPrivateStore(sourceUri: string, destination: File): Promise<void> {
@@ -106,7 +101,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
   const localVlogId = `${senderPubkey.slice(0, 10)}-${remoteVlogId}`;
   const clipId = `${senderPubkey.slice(0, 10)}-${remoteClipId}`;
   const mediaDir = mediaDirectory();
-  const workDir = cacheDirectory();
+  const workDir = workDirectory();
   const plaintextFile = new File(mediaDir, `${clipId}.mp4`);
   const encryptedFile = new File(workDir, `${clipId}.fc1`);
   let uploadedUrl = '';
@@ -116,8 +111,28 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
 
   try {
     report({ stage: 'preparing' });
-    await copyIntoPrivateStore(input.sourceUri, plaintextFile);
+    const prepared = await prepareVideoForPublish(
+      {
+        uri: input.sourceUri,
+        durationMs: input.durationMs,
+        width: input.width,
+        height: input.height,
+      },
+      (progress) => report({ stage: progress.stage, fraction: progress.fraction })
+    );
+    await copyIntoPrivateStore(prepared.uri, plaintextFile);
     const plaintextSha256 = await plaintextFile.digest('SHA-256');
+
+    // The cover is stored locally first so the author's feed shows it even if
+    // the optional encrypted cover upload fails.
+    let coverFile: File | null = null;
+    if (prepared.thumbnail) {
+      try {
+        coverFile = await storeThumbnail(prepared.thumbnail.uri, clipId);
+      } catch {
+        coverFile = null;
+      }
+    }
 
     report({ stage: 'encrypting' });
     const mediaKey = await generateMediaKey();
@@ -148,11 +163,47 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       throw new Error('The uploaded file could not be verified on the storage provider');
     }
 
+    let thumbnail: VlogThumbnailPayload | undefined;
+    if (coverFile && prepared.thumbnail) {
+      report({ stage: 'thumbnail' });
+      const thumbnailKey = await generateMediaKey();
+      const encryptedThumbnailFile = new File(workDir, `${clipId}-thumb.fc1`);
+      try {
+        const sealedThumbnail = await encryptMediaFile(coverFile, encryptedThumbnailFile, thumbnailKey);
+        const thumbnailUpload = await provider.uploadFile(encryptedThumbnailFile, {
+          sha256: sealedThumbnail.sha256,
+          size: sealedThumbnail.encryptedSize,
+          mimeType: 'application/octet-stream',
+          secretKey: input.secretKey,
+        });
+        if (thumbnailUpload.verified) {
+          await saveThumbnailKey(clipId, thumbnailKey);
+          thumbnail = {
+            url: thumbnailUpload.descriptor.url,
+            keyB64: bytesToBase64(thumbnailKey),
+            sha256: sealedThumbnail.sha256,
+            plaintextSha256: await coverFile.digest('SHA-256'),
+            size: sealedThumbnail.encryptedSize,
+            plaintextSize: sealedThumbnail.plaintextSize,
+            mimeType: 'image/jpeg',
+            width: prepared.thumbnail.width,
+            height: prepared.thumbnail.height,
+          };
+        }
+      } catch {
+        // Covers are optional: publishing succeeds without one.
+      } finally {
+        if (encryptedThumbnailFile.exists) encryptedThumbnailFile.delete();
+      }
+    }
+
     report({ stage: 'distributing' });
     await saveMediaKey(clipId, mediaKey);
     const members = await listCircleMembers(input.circle.id);
+    // Invited members already have the owner's authorization; sending them
+    // content keys means a lost acceptance message cannot lock them out.
     const recipientPubkeys = members
-      .filter((member) => member.status === 'active' && member.pubkey !== senderPubkey)
+      .filter((member) => member.status !== 'removed' && member.pubkey !== senderPubkey)
       .map((member) => member.pubkey);
 
     const payload: VlogKeyPayload = {
@@ -160,6 +211,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       vlogId: remoteVlogId,
       clipId: remoteClipId,
       circleId: input.circle.id,
+      authorName: input.authorName?.trim() || undefined,
       title: input.title?.trim() || undefined,
       description: input.description?.trim() || undefined,
       format: 'FOLIOFC1',
@@ -168,10 +220,11 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       plaintextSha256,
       encryptedSize: encrypted.encryptedSize,
       plaintextSize: encrypted.plaintextSize,
-      durationMs: Math.round(input.durationMs),
-      mimeType: input.mimeType || 'video/mp4',
-      width: input.width,
-      height: input.height,
+      durationMs: Math.round(prepared.durationMs),
+      mimeType: prepared.mimeType || 'video/mp4',
+      width: prepared.width ?? undefined,
+      height: prepared.height ?? undefined,
+      thumbnail,
       createdAt: Math.floor(Date.now() / 1000),
     };
 
@@ -210,6 +263,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       circleName: input.circle.name,
       title: payload.title ?? null,
       description: payload.description ?? null,
+      coverUri: coverFile?.uri ?? null,
       createdAt: Math.floor(now / 1000),
       receivedAt: now,
       state: 'published',
@@ -243,6 +297,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       clipId,
       rumorId,
       url: uploadedUrl,
+      coverUri: coverFile?.uri ?? null,
       encryptedSha256: encrypted.sha256,
       encryptedSize: encrypted.encryptedSize,
       plaintextSize: encrypted.plaintextSize,

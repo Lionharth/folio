@@ -98,6 +98,62 @@ Compatibility: a generic NIP-17 client can see a file message, but cannot
 decrypt FC1 because the key decrypts chunks, not the whole container. Folio does
 not pretend otherwise.
 
+## Circle control messages
+
+Circle state is application-level. Invitations and acceptances travel as
+NIP-17 `kind: 14` rumors with a `folio-control` tag, so relays only see gift
+wraps. They are never public events.
+
+Invitation:
+
+```json
+{
+  "v": 1,
+  "type": "circle-invite",
+  "circle": {
+    "id": "uuid",
+    "name": "Close friends",
+    "description": "optional",
+    "ownerPubkey": "<hex>",
+    "ownerName": "Leon",
+    "membershipVersion": 2,
+    "members": ["<owner>", "<member>", "..."],
+    "names": { "<owner>": "Leon", "<member>": "Sam" }
+  },
+  "invitedAt": 1700000000
+}
+```
+
+`ownerName` and `names` are optional and only ever exist inside the encrypted
+rumor. Names are capped at 40 characters and `names` may only contain keys that
+appear in `members`.
+
+Acceptance:
+
+```json
+{ "v": 1, "type": "circle-accept", "circleId": "uuid", "memberPubkey": "<hex>", "memberName": "Sam", "at": 1700000100 }
+```
+
+Rules enforced in `src/lib/nostr/circleControl.ts` and `src/services/inbox.ts`:
+
+- `circle.ownerPubkey` must equal the rumor author, otherwise the invite is
+  dropped (no relay can forge an owner).
+- display names are learned from these control messages and from the
+  `authorName` field of key messages; Folio never reads public kind-0 metadata.
+- the recipient must appear in `circle.members`, otherwise it is dropped.
+- members are hex public keys, deduplicated, capped at 100.
+- names are optional, whitespace-normalised, 1–40 characters; a names map with
+  a key outside the roster, a non-hex key or an invalid name is rejected.
+- an acceptance is only applied when its `memberPubkey` equals the sender and
+  the local circle is owned by the receiver.
+- invitations are deduplicated by (circle, owner, membership version).
+
+On acceptance the member creates the circle locally and sends an acceptance to
+the owner. Acceptance delivery is best-effort, but the owner already authorized
+the invite, and post keys are delivered to both `invited` and `active` members,
+so a lost acceptance cannot lock the invitee out of future posts. Previously
+published media is not redistributed.
+
 ## FOLIO-FC1
 
 ```

@@ -23,6 +23,18 @@ export interface CircleMember {
   joinedAt: number;
 }
 
+export interface ClipThumbnail {
+  /** Encrypted FC1 blob URL for the JPEG cover. */
+  url: string;
+  sha256: string;
+  encryptedSize: number;
+  plaintextSha256?: string | null;
+  plaintextSize?: number | null;
+  mimeType: string;
+  width?: number | null;
+  height?: number | null;
+}
+
 export interface Clip {
   id: string;
   vlogId: string;
@@ -39,6 +51,7 @@ export interface Clip {
   width?: number | null;
   height?: number | null;
   localUri?: string | null;
+  thumbnail?: ClipThumbnail | null;
   state: ClipState;
   createdAt: number;
 }

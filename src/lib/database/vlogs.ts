@@ -57,6 +57,7 @@ interface ClipRow {
   width: number | null;
   height: number | null;
   local_uri: string | null;
+  thumbnail: string | null;
   state: string;
   created_at: number;
 }
@@ -107,6 +108,14 @@ function mapVlog(row: VlogRow): Vlog {
 }
 
 function mapClip(row: ClipRow): Clip {
+  let thumbnail: Clip['thumbnail'] = null;
+  if (row.thumbnail) {
+    try {
+      thumbnail = JSON.parse(row.thumbnail) as Clip['thumbnail'];
+    } catch {
+      thumbnail = null;
+    }
+  }
   return {
     id: row.id,
     vlogId: row.vlog_id,
@@ -123,6 +132,7 @@ function mapClip(row: ClipRow): Clip {
     width: row.width,
     height: row.height,
     localUri: row.local_uri,
+    thumbnail,
     state: row.state as Clip['state'],
     createdAt: row.created_at,
   };
@@ -131,6 +141,19 @@ function mapClip(row: ClipRow): Clip {
 export async function listCircles(): Promise<Circle[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<CircleRow>('SELECT * FROM circles ORDER BY created_at ASC');
+  return rows.map(mapCircle);
+}
+
+/** Circles the given identity is an active member of. Invited circles stay hidden until accepted. */
+export async function listCirclesForViewer(viewerPubkey: string): Promise<Circle[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<CircleRow>(
+    `SELECT c.* FROM circles c
+     JOIN circle_members m ON m.circle_id = c.id
+     WHERE m.pubkey = ? AND m.status = 'active'
+     ORDER BY c.created_at ASC`,
+    viewerPubkey
+  );
   return rows.map(mapCircle);
 }
 
@@ -194,7 +217,11 @@ export async function createCircle(input: {
   return circle;
 }
 
-export async function addCircleMember(circleId: string, pubkey: string): Promise<void> {
+export async function addCircleMember(
+  circleId: string,
+  pubkey: string,
+  status: 'invited' | 'active' = 'invited'
+): Promise<void> {
   const db = await getDatabase();
   const now = Date.now();
   await db.runAsync(
@@ -202,10 +229,65 @@ export async function addCircleMember(circleId: string, pubkey: string): Promise
     circleId,
     pubkey,
     'member',
-    'active',
+    status,
     now
   );
   await db.runAsync('UPDATE circles SET membership_version = membership_version + 1, updated_at = ? WHERE id = ?', now, circleId);
+}
+
+export async function markCircleMemberActive(circleId: string, pubkey: string): Promise<boolean> {
+  const db = await getDatabase();
+  const current = await db.getFirstAsync<{ status: string }>(
+    'SELECT status FROM circle_members WHERE circle_id = ? AND pubkey = ?',
+    circleId,
+    pubkey
+  );
+  if (!current || current.status === 'active' || current.status === 'removed') return false;
+  await db.runAsync("UPDATE circle_members SET status = 'active' WHERE circle_id = ? AND pubkey = ?", circleId, pubkey);
+  await db.runAsync('UPDATE circles SET updated_at = ? WHERE id = ?', Date.now(), circleId);
+  return true;
+}
+
+/** Creates the local circle from a delivered invitation and joins as an active member. */
+export async function addCircleFromInvite(input: {
+  id: string;
+  ownerPubkey: string;
+  name: string;
+  description?: string | null;
+  membershipVersion: number;
+  members: string[];
+  selfPubkey: string;
+}): Promise<Circle> {
+  const db = await getDatabase();
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      'INSERT INTO circles (id, owner_pubkey, name, description, membership_version, created_at, updated_at, muted) VALUES (?, ?, ?, ?, ?, ?, ?, 0) ON CONFLICT(id) DO UPDATE SET name = excluded.name, description = excluded.description, membership_version = MAX(circles.membership_version, excluded.membership_version), updated_at = excluded.updated_at',
+      input.id,
+      input.ownerPubkey,
+      input.name,
+      input.description ?? null,
+      input.membershipVersion,
+      now,
+      now
+    );
+    const everyone = [...new Set([input.ownerPubkey, ...input.members, input.selfPubkey])];
+    for (const pubkey of everyone) {
+      const role = pubkey === input.ownerPubkey ? 'owner' : 'member';
+      const status = pubkey === input.selfPubkey ? 'active' : 'active';
+      await db.runAsync(
+        'INSERT INTO circle_members (circle_id, pubkey, role, status, joined_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(circle_id, pubkey) DO UPDATE SET role = excluded.role, status = excluded.status',
+        input.id,
+        pubkey,
+        role,
+        status,
+        now
+      );
+    }
+  });
+  const circle = await getCircle(input.id);
+  if (!circle) throw new Error('Circle was not created from the invitation');
+  return circle;
 }
 
 export async function removeCircleMember(circleId: string, pubkey: string): Promise<void> {
@@ -231,7 +313,7 @@ export async function upsertVlog(vlog: Vlog, clips: Clip[]): Promise<void> {
          rumor_id = excluded.rumor_id,
          title = excluded.title,
          description = excluded.description,
-         cover_uri = excluded.cover_uri,
+         cover_uri = COALESCE(excluded.cover_uri, vlogs.cover_uri),
          state = excluded.state,
          format = excluded.format,
          metadata = excluded.metadata`,
@@ -256,14 +338,15 @@ export async function upsertVlog(vlog: Vlog, clips: Clip[]): Promise<void> {
     for (const clip of clips) {
       await db.runAsync(
         `INSERT INTO clips (id, vlog_id, position, provider, url, mirrors, encrypted_sha256, plaintext_sha256, encrypted_size,
-          plaintext_size, duration_ms, mime_type, width, height, local_uri, state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          plaintext_size, duration_ms, mime_type, width, height, local_uri, thumbnail, state, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            position = excluded.position,
            provider = excluded.provider,
            url = excluded.url,
            mirrors = excluded.mirrors,
            local_uri = excluded.local_uri,
+           thumbnail = COALESCE(excluded.thumbnail, clips.thumbnail),
            state = excluded.state`,
         clip.id,
         clip.vlogId,
@@ -280,6 +363,7 @@ export async function upsertVlog(vlog: Vlog, clips: Clip[]): Promise<void> {
         clip.width ?? null,
         clip.height ?? null,
         clip.localUri ?? null,
+        clip.thumbnail ? JSON.stringify(clip.thumbnail) : null,
         clip.state,
         clip.createdAt
       );
@@ -365,6 +449,11 @@ export async function setFavourite(vlogId: string, favourite: boolean): Promise<
 export async function updateClipLocalUri(clipId: string, localUri: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync('UPDATE clips SET local_uri = ?, state = ? WHERE id = ?', localUri, 'downloaded', clipId);
+}
+
+export async function updateVlogCover(vlogId: string, coverUri: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync('UPDATE vlogs SET cover_uri = ? WHERE id = ?', coverUri, vlogId);
 }
 
 export async function countUnread(viewerPubkey: string): Promise<number> {

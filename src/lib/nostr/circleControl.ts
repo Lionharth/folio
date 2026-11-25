@@ -1,0 +1,169 @@
+import { createRumor, createSeal, createWrap } from 'nostr-tools/nip59';
+import { type Event } from 'nostr-tools/pure';
+
+export const KIND_PRIVATE_MESSAGE = 14;
+export const FOLIO_CONTROL_TAG = 'folio-control';
+
+export interface CircleInvitePayload {
+  v: 1;
+  type: 'circle-invite';
+  circle: {
+    id: string;
+    name: string;
+    description?: string;
+    ownerPubkey: string;
+    ownerName?: string;
+    membershipVersion: number;
+    /** Owner plus every member the owner currently has in the circle. */
+    members: string[];
+    /** Display names the owner knows for the roster, kept private in the wrap. */
+    names?: Record<string, string>;
+  };
+  invitedAt: number;
+}
+
+export interface CircleAcceptPayload {
+  v: 1;
+  type: 'circle-accept';
+  circleId: string;
+  memberPubkey: string;
+  memberName?: string;
+  at: number;
+}
+
+export type CircleControlPayload = CircleInvitePayload | CircleAcceptPayload;
+
+const HEX64 = /^[0-9a-f]{64}$/;
+
+function isHex64(value: unknown): value is string {
+  return typeof value === 'string' && HEX64.test(value);
+}
+
+function isNonEmptyString(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+}
+
+function normalizeName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  if (cleaned.length === 0 || cleaned.length > 40) return undefined;
+  return cleaned;
+}
+
+function parseNames(value: unknown, allowed: string[]): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 100) return undefined;
+  const allowedSet = new Set(allowed);
+  const names: Record<string, string> = {};
+  for (const [pubkey, raw] of entries) {
+    if (!isHex64(pubkey) || !allowedSet.has(pubkey)) return undefined;
+    const name = normalizeName(raw);
+    if (!name) return undefined;
+    names[pubkey] = name;
+  }
+  return names;
+}
+
+/**
+ * Parses and validates an application control payload from an encrypted NIP-17
+ * rumor. Invalid values are rejected instead of coerced.
+ */
+export function parseControlPayload(tags: string[][]): CircleControlPayload | null {
+  const tag = tags.find((entry) => entry[0] === FOLIO_CONTROL_TAG);
+  if (!tag?.[1]) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(tag[1]);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const value = parsed as Record<string, unknown>;
+  if (value.v !== 1) return null;
+
+  if (value.type === 'circle-invite') {
+    const circle = value.circle as Record<string, unknown> | undefined;
+    if (!circle || typeof circle !== 'object') return null;
+    if (!isNonEmptyString(circle.id, 120)) return null;
+    if (!isNonEmptyString(circle.name, 80)) return null;
+    if (circle.description !== undefined && (typeof circle.description !== 'string' || circle.description.length > 400)) {
+      return null;
+    }
+    if (!isHex64(circle.ownerPubkey)) return null;
+    if (!Number.isInteger(circle.membershipVersion) || (circle.membershipVersion as number) < 1) return null;
+    if (!Array.isArray(circle.members) || circle.members.length === 0 || circle.members.length > 100) return null;
+    if (!circle.members.every(isHex64)) return null;
+    if (typeof value.invitedAt !== 'number' || !Number.isFinite(value.invitedAt)) return null;
+    const members = [...new Set(circle.members as string[])];
+    if (circle.ownerName !== undefined && !normalizeName(circle.ownerName)) return null;
+    const names = parseNames(circle.names, members);
+    if (circle.names !== undefined && !names) return null;
+    return {
+      v: 1,
+      type: 'circle-invite',
+      circle: {
+        id: circle.id,
+        name: circle.name.trim(),
+        description: typeof circle.description === 'string' ? circle.description : undefined,
+        ownerPubkey: circle.ownerPubkey,
+        ownerName: normalizeName(circle.ownerName),
+        membershipVersion: circle.membershipVersion as number,
+        members,
+        names,
+      },
+      invitedAt: value.invitedAt,
+    };
+  }
+
+  if (value.type === 'circle-accept') {
+    if (!isNonEmptyString(value.circleId, 120)) return null;
+    if (!isHex64(value.memberPubkey)) return null;
+    if (value.memberName !== undefined && !normalizeName(value.memberName)) return null;
+    if (typeof value.at !== 'number' || !Number.isFinite(value.at)) return null;
+    return {
+      v: 1,
+      type: 'circle-accept',
+      circleId: value.circleId,
+      memberPubkey: value.memberPubkey,
+      memberName: normalizeName(value.memberName),
+      at: value.at,
+    };
+  }
+
+  return null;
+}
+
+/** Builds an unsigned kind-14 control rumor for one recipient. */
+export function buildControlRumor(payload: CircleControlPayload, senderSecret: Uint8Array, recipientPubkey: string) {
+  return createRumor(
+    {
+      kind: KIND_PRIVATE_MESSAGE,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ['p', recipientPubkey],
+        [FOLIO_CONTROL_TAG, JSON.stringify(payload)],
+      ],
+      content: '',
+    },
+    senderSecret
+  );
+}
+
+export interface WrappedControl {
+  rumorId: string;
+  wrap: Event;
+}
+
+/** Seals and gift-wraps a control message for one recipient. */
+export function wrapControl(
+  payload: CircleControlPayload,
+  senderSecret: Uint8Array,
+  recipientPubkey: string
+): WrappedControl {
+  const rumor = buildControlRumor(payload, senderSecret, recipientPubkey);
+  const seal = createSeal(rumor, senderSecret, recipientPubkey);
+  const wrap = createWrap(seal, recipientPubkey);
+  return { rumorId: rumor.id, wrap };
+}

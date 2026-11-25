@@ -1,6 +1,9 @@
 import { getPublicKey, finalizeEvent, type Event, type EventTemplate } from 'nostr-tools/pure';
 import { createRumor, createSeal, createWrap, unwrapEvent } from 'nostr-tools/nip59';
 
+import { KIND_PRIVATE_MESSAGE, parseControlPayload, type CircleControlPayload } from './circleControl';
+
+import { MAX_THUMBNAIL_BYTES } from '../../constants/media';
 import { bytesToBase64, base64ToBytes } from '../crypto/bytes';
 import { DEFAULT_DM_RELAYS, publishToRelays, queryRelays, type Pool } from './relays';
 
@@ -21,11 +24,26 @@ export const FOLIO_FORMAT_FC1 = 'FOLIOFC1';
  * there is no single nonce. We keep `decryption-key` meaningful for standard
  * clients and describe the container in `folio-format`. See PROTOCOLS.md.
  */
+export interface VlogThumbnailPayload {
+  /** Encrypted FC1 blob URL for the JPEG cover. */
+  url: string;
+  /** AES-256 key for the cover, separate from the video key. */
+  keyB64: string;
+  sha256: string;
+  plaintextSha256?: string;
+  size: number;
+  plaintextSize?: number;
+  mimeType: string;
+  width: number;
+  height: number;
+}
+
 export interface VlogKeyPayload {
   v: 1;
   vlogId: string;
   clipId: string;
   circleId: string;
+  authorName?: string;
   title?: string;
   description?: string;
   format: typeof FOLIO_FORMAT_FC1;
@@ -38,6 +56,7 @@ export interface VlogKeyPayload {
   mimeType: string;
   width?: number;
   height?: number;
+  thumbnail?: VlogThumbnailPayload;
   createdAt: number;
   mirrors?: string[];
 }
@@ -139,22 +158,102 @@ export function parseKeyPayload(tags: string[][]): VlogKeyPayload | null {
   }
   if (parsed.v !== 1 || parsed.format !== FOLIO_FORMAT_FC1) return null;
   if (!parsed.keyB64 || !parsed.encryptedSha256 || !parsed.clipId || !parsed.vlogId) return null;
+  if (parsed.authorName !== undefined) {
+    if (typeof parsed.authorName !== 'string' || parsed.authorName.trim().length === 0) return null;
+    if (parsed.authorName.length > 40) return null;
+    parsed.authorName = parsed.authorName.trim();
+  }
   if (!Number.isFinite(parsed.encryptedSize) || !Number.isFinite(parsed.durationMs)) return null;
   if (base64ToBytes(parsed.keyB64).length !== 32) return null;
+  if (parsed.thumbnail !== undefined) {
+    const thumbnail = parseThumbnailPayload(parsed.thumbnail);
+    if (thumbnail) parsed.thumbnail = thumbnail;
+    else delete parsed.thumbnail;
+  }
   return parsed;
 }
 
+const HEX_64 = /^[0-9a-f]{64}$/;
+
 /**
- * Fetches and unwraps gift wraps addressed to the secret key's public key.
- * Invalid seals, impostor rumors and non-FOLIO messages are skipped. Nothing
- * decrypted is logged.
+ * Thumbnails are optional and additive, so a malformed cover is dropped instead
+ * of rejecting the whole video message.
  */
-export async function fetchKeyMessages(
+export function parseThumbnailPayload(value: unknown): VlogThumbnailPayload | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.url !== 'string' || !/^https?:\/\//i.test(candidate.url)) return null;
+  if (typeof candidate.keyB64 !== 'string') return null;
+  if (typeof candidate.sha256 !== 'string' || !HEX_64.test(candidate.sha256)) return null;
+  if (
+    candidate.plaintextSha256 !== undefined &&
+    (typeof candidate.plaintextSha256 !== 'string' || !HEX_64.test(candidate.plaintextSha256))
+  ) {
+    return null;
+  }
+  if (typeof candidate.size !== 'number' || !Number.isFinite(candidate.size) || candidate.size <= 0) return null;
+  if (candidate.size > MAX_THUMBNAIL_BYTES) return null;
+  if (typeof candidate.mimeType !== 'string' || !candidate.mimeType.startsWith('image/')) return null;
+  if (
+    typeof candidate.width !== 'number' ||
+    !Number.isFinite(candidate.width) ||
+    candidate.width <= 0 ||
+    candidate.width > 8192 ||
+    typeof candidate.height !== 'number' ||
+    !Number.isFinite(candidate.height) ||
+    candidate.height <= 0 ||
+    candidate.height > 8192
+  ) {
+    return null;
+  }
+  let keyLength = 0;
+  try {
+    keyLength = base64ToBytes(candidate.keyB64).length;
+  } catch {
+    return null;
+  }
+  if (keyLength !== 32) return null;
+  return {
+    url: candidate.url,
+    keyB64: candidate.keyB64,
+    sha256: candidate.sha256,
+    plaintextSha256:
+      typeof candidate.plaintextSha256 === 'string' ? candidate.plaintextSha256 : undefined,
+    size: candidate.size,
+    plaintextSize:
+      typeof candidate.plaintextSize === 'number' && Number.isFinite(candidate.plaintextSize)
+        ? candidate.plaintextSize
+        : undefined,
+    mimeType: candidate.mimeType,
+    width: candidate.width,
+    height: candidate.height,
+  };
+}
+
+export interface ControlInboxMessage {
+  rumorId: string;
+  senderPubkey: string;
+  createdAt: number;
+  payload: CircleControlPayload;
+  wrapEventId: string;
+}
+
+export interface InboxResult {
+  files: InboxMessage[];
+  controls: ControlInboxMessage[];
+}
+
+/**
+ * Fetches and unwraps gift wraps addressed to the secret key's public key in a
+ * single relay query. Invalid seals, impostor rumors and non-FOLIO messages are
+ * skipped. Nothing decrypted is logged.
+ */
+export async function fetchInboxMessages(
   pool: Pool,
   relays: string[],
   secretKey: Uint8Array,
   options: { since?: number; limit?: number } = {}
-): Promise<InboxMessage[]> {
+): Promise<InboxResult> {
   const pubkey = getPublicKey(secretKey);
   const wraps = await queryRelays(pool, relays, {
     kinds: [KIND_GIFT_WRAP],
@@ -164,7 +263,8 @@ export async function fetchKeyMessages(
   });
 
   const seen = new Set<string>();
-  const messages: InboxMessage[] = [];
+  const files: InboxMessage[] = [];
+  const controls: ControlInboxMessage[] = [];
   for (const wrap of wraps) {
     let rumor;
     try {
@@ -172,23 +272,40 @@ export async function fetchKeyMessages(
     } catch {
       continue;
     }
-    if (rumor.kind !== KIND_FILE_MESSAGE) continue;
     if (seen.has(rumor.id)) continue;
-    const payload = parseKeyPayload(rumor.tags);
-    if (!payload) continue;
-    seen.add(rumor.id);
-    messages.push({
-      rumorId: rumor.id,
-      senderPubkey: rumor.pubkey,
-      createdAt: rumor.created_at,
-      content: rumor.content,
-      tags: rumor.tags,
-      payload,
-      wrapEventId: wrap.id,
-    });
+
+    if (rumor.kind === KIND_FILE_MESSAGE) {
+      const payload = parseKeyPayload(rumor.tags);
+      if (!payload) continue;
+      seen.add(rumor.id);
+      files.push({
+        rumorId: rumor.id,
+        senderPubkey: rumor.pubkey,
+        createdAt: rumor.created_at,
+        content: rumor.content,
+        tags: rumor.tags,
+        payload,
+        wrapEventId: wrap.id,
+      });
+      continue;
+    }
+
+    if (rumor.kind === KIND_PRIVATE_MESSAGE) {
+      const payload = parseControlPayload(rumor.tags);
+      if (!payload) continue;
+      seen.add(rumor.id);
+      controls.push({
+        rumorId: rumor.id,
+        senderPubkey: rumor.pubkey,
+        createdAt: rumor.created_at,
+        payload,
+        wrapEventId: wrap.id,
+      });
+    }
   }
-  messages.sort((a, b) => b.createdAt - a.createdAt);
-  return messages;
+  files.sort((a, b) => b.createdAt - a.createdAt);
+  controls.sort((a, b) => b.createdAt - a.createdAt);
+  return { files, controls };
 }
 
 /** Publishes the NIP-17 inbox relay list (kind 10050). */

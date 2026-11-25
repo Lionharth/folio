@@ -9,7 +9,9 @@ import { EmptyState, ErrorState } from '../../components/ui/States';
 import { PageHeader } from '../../components/ui/Layout';
 import { Screen } from '../../components/ui/Screen';
 import { VlogRow } from '../../components/vlog/VlogRow';
-import { listCircles, listVlogs } from '../../lib/database/vlogs';
+import { listCirclesForViewer, listVlogs } from '../../lib/database/vlogs';
+import { listContactNames } from '../../lib/database/contacts';
+import { shortNpub } from '../../lib/nostr/format';
 import { readSecretKey } from '../../lib/nostr/identity';
 import { refreshInbox } from '../../services/inbox';
 import { useSession } from '../../stores/session';
@@ -23,7 +25,12 @@ export default function UpdatesScreen() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
-  const circlesQuery = useQuery({ queryKey: ['circles'], queryFn: listCircles });
+  const circlesQuery = useQuery({
+    queryKey: ['circles', identity?.pubkey],
+    queryFn: () => listCirclesForViewer(identity!.pubkey),
+    enabled: Boolean(identity),
+  });
+  const contactsQuery = useQuery({ queryKey: ['contact-names'], queryFn: listContactNames });
   const vlogsQuery = useQuery({
     queryKey: ['vlogs', identity?.pubkey, circleFilter],
     queryFn: () => listVlogs(identity!.pubkey, { circleId: circleFilter, limit: 60 }),
@@ -48,7 +55,10 @@ export default function UpdatesScreen() {
           ? `${result.added} new ${result.added === 1 ? 'update' : 'updates'}`
           : 'You are up to date'
       );
-      await queryClient.invalidateQueries({ queryKey: ['vlogs'] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['vlogs'] }),
+        queryClient.invalidateQueries({ queryKey: ['contact-names'] }),
+      ]);
     } catch (error) {
       setSyncMessage('Could not reach your relays');
       Alert.alert('Sync failed', error instanceof Error ? error.message : 'Unknown error');
@@ -58,9 +68,11 @@ export default function UpdatesScreen() {
   }, [identity, syncing, queryClient]);
 
   const vlogs = vlogsQuery.data ?? [];
+  const nameFor = (pubkey: string) =>
+    pubkey === identity?.pubkey ? (identity?.label ?? 'You') : (contactsQuery.data?.[pubkey] ?? shortNpub(pubkey));
 
   return (
-    <Screen padded={false}>
+    <Screen padded={false} edges={['top', 'left', 'right']}>
       <FlatList
         data={vlogs}
         keyExtractor={(item) => item.id}
@@ -132,6 +144,7 @@ export default function UpdatesScreen() {
           <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
             <VlogRow
               vlog={{ ...item, circleName: item.circleName ?? circlesById.get(item.circleId ?? '') ?? null }}
+              authorLabel={nameFor(item.authorPubkey)}
             />
           </View>
         )}

@@ -17,7 +17,13 @@ export interface ScreenProps extends ViewProps {
   edges?: ('top' | 'bottom' | 'left' | 'right')[];
 }
 
-export function Screen({ children, padded = true, edges = ['top', 'left', 'right'], style, ...rest }: ScreenProps) {
+export function Screen({
+  children,
+  padded = true,
+  edges = ['top', 'bottom', 'left', 'right'],
+  style,
+  ...rest
+}: ScreenProps) {
   const theme = useTheme();
   return (
     <SafeAreaView edges={edges} style={[{ flex: 1, backgroundColor: theme.colors.background }, style]} {...rest}>

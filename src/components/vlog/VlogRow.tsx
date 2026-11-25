@@ -1,10 +1,10 @@
 import React from 'react';
 import { Pressable, View } from 'react-native';
 import { router } from 'expo-router';
-import Feather from '@expo/vector-icons/Feather';
 
 import { AppText } from '../ui/AppText';
 import { Avatar } from '../ui/Avatar';
+import { VlogThumbnail } from './VlogThumbnail';
 import { useTheme } from '../../theme/ThemeProvider';
 import { formatRelativeTime } from '../../utils/time';
 import { shortNpub } from '../../lib/nostr/format';
@@ -42,20 +42,7 @@ export function VlogRow({ vlog, authorLabel }: { vlog: Vlog; authorLabel?: strin
           </View>
 
           <View style={{ flexDirection: 'row', gap: theme.spacing.lg }}>
-            <View
-              style={{
-                width: 108,
-                height: 72,
-                borderRadius: theme.radius.md,
-                backgroundColor: theme.colors.surfaceSubtle,
-                borderWidth: 1,
-                borderColor: theme.colors.border,
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <Feather name="play" size={20} color={theme.colors.textSecondary} />
-            </View>
+            <VlogThumbnail vlog={vlog} />
             <View style={{ flex: 1, gap: theme.spacing.xs, justifyContent: 'center' }}>
               <AppText variant="vlogTitle" numberOfLines={2}>
                 {vlog.title?.trim() || 'Untitled moment'}

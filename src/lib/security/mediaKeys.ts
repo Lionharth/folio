@@ -27,3 +27,12 @@ export async function deleteMediaKey(clipId: string): Promise<void> {
 export async function hasMediaKey(clipId: string): Promise<boolean> {
   return (await SecureStore.getItemAsync(PREFIX + clipId)) !== null;
 }
+
+/** Covers are encrypted with their own key, separate from the clip key. */
+export async function saveThumbnailKey(clipId: string, key: Uint8Array): Promise<void> {
+  await saveMediaKey(`${clipId}.thumb`, key);
+}
+
+export async function loadThumbnailKey(clipId: string): Promise<Uint8Array | null> {
+  return loadMediaKey(`${clipId}.thumb`);
+}

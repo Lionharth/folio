@@ -12,7 +12,7 @@ import { Card, Divider } from '../../components/ui/Card';
 import { ScreenScroll } from '../../components/ui/Screen';
 import { SectionHeader } from '../../components/ui/Layout';
 import { DEFAULT_RELAY_LIST, PROVIDER_PRESETS } from '../../constants/providers';
-import { listCircles } from '../../lib/database/vlogs';
+import { listCirclesForViewer } from '../../lib/database/vlogs';
 import { exportIdentitySecret } from '../../lib/nostr/identity';
 import { shortNpub } from '../../lib/nostr/format';
 import { useSession } from '../../stores/session';
@@ -28,7 +28,11 @@ export default function ProfileScreen() {
   const [revealed, setRevealed] = useState<{ identityId: string; nsec: string } | null>(null);
   const revealedKey = revealed && revealed.identityId === identity?.id ? revealed.nsec : null;
 
-  const circlesQuery = useQuery({ queryKey: ['circles'], queryFn: listCircles });
+  const circlesQuery = useQuery({
+    queryKey: ['circles', identity?.pubkey],
+    queryFn: () => listCirclesForViewer(identity!.pubkey),
+    enabled: Boolean(identity),
+  });
 
   if (!identity) return null;
 

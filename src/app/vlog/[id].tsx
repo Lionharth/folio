@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { View } from 'react-native';
+import { ActivityIndicator, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEvent, useEventListener } from 'expo';
+import { Image } from 'expo-image';
 import Feather from '@expo/vector-icons/Feather';
 
 import { AppText } from '../../components/ui/AppText';
@@ -12,6 +13,7 @@ import { Divider } from '../../components/ui/Card';
 import { ScreenScroll } from '../../components/ui/Screen';
 import { ErrorState, LoadingState } from '../../components/ui/States';
 import { getVlog, markVlogRead, setFavourite } from '../../lib/database/vlogs';
+import { getContactName } from '../../lib/database/contacts';
 import { shortNpub } from '../../lib/nostr/format';
 import { ensureLocalClip } from '../../services/playback';
 import { useTheme } from '../../theme/ThemeProvider';
@@ -65,6 +67,11 @@ export default function VlogScreen() {
     queryFn: () => getVlog(identity!.pubkey, id),
     enabled: Boolean(identity),
   });
+  const authorNameQuery = useQuery({
+    queryKey: ['contact-name', vlogQuery.data?.authorPubkey],
+    queryFn: () => getContactName(vlogQuery.data!.authorPubkey),
+    enabled: Boolean(vlogQuery.data?.authorPubkey),
+  });
 
   const vlog = vlogQuery.data;
   const clips = vlog?.clips ?? [];
@@ -117,7 +124,10 @@ export default function VlogScreen() {
     );
   }
 
-  const author = shortNpub(vlog.authorPubkey);
+  const author =
+    vlog.authorPubkey === identity?.pubkey
+      ? (identity?.label ?? 'You')
+      : (authorNameQuery.data ?? shortNpub(vlog.authorPubkey));
   const currentUri = currentClip ? localUris[currentClip.id] : undefined;
   const playbackError = currentClip ? (errors[currentClip.id] ?? null) : null;
   const loadingClip = Boolean(currentClip && !currentUri && !playbackError);
@@ -167,9 +177,31 @@ export default function VlogScreen() {
               backgroundColor: theme.colors.surfaceSubtle,
               alignItems: 'center',
               justifyContent: 'center',
+              overflow: 'hidden',
             }}
           >
-            <LoadingState label="Downloading and decrypting" />
+            {vlog.coverUri ? (
+              <Image
+                source={{ uri: vlog.coverUri }}
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                contentFit="cover"
+              />
+            ) : null}
+            <View
+              style={{
+                alignItems: 'center',
+                gap: theme.spacing.sm,
+                paddingHorizontal: theme.spacing.lg,
+                paddingVertical: theme.spacing.md,
+                borderRadius: theme.radius.md,
+                backgroundColor: vlog.coverUri ? 'rgba(0,0,0,0.55)' : 'transparent',
+              }}
+            >
+              {vlog.coverUri ? <ActivityIndicator color="#fff" /> : null}
+              <AppText variant="caption" color={vlog.coverUri ? undefined : 'textSecondary'} style={vlog.coverUri ? { color: '#fff' } : undefined}>
+                Downloading and decrypting
+              </AppText>
+            </View>
           </View>
         ) : (
           <Player

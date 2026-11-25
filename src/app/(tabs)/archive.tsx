@@ -9,7 +9,9 @@ import { PageHeader } from '../../components/ui/Layout';
 import { Screen } from '../../components/ui/Screen';
 import { TextField } from '../../components/ui/TextField';
 import { VlogRow } from '../../components/vlog/VlogRow';
-import { listCircles, listVlogs } from '../../lib/database/vlogs';
+import { listCirclesForViewer, listVlogs } from '../../lib/database/vlogs';
+import { listContactNames } from '../../lib/database/contacts';
+import { shortNpub } from '../../lib/nostr/format';
 import { useTheme } from '../../theme/ThemeProvider';
 import { useSession } from '../../stores/session';
 
@@ -20,7 +22,12 @@ export default function ArchiveScreen() {
   const [favouritesOnly, setFavouritesOnly] = useState(false);
   const [circleId, setCircleId] = useState<string | null>(null);
 
-  const circlesQuery = useQuery({ queryKey: ['circles'], queryFn: listCircles });
+  const contactsQuery = useQuery({ queryKey: ['contact-names'], queryFn: listContactNames });
+  const circlesQuery = useQuery({
+    queryKey: ['circles', identity?.pubkey],
+    queryFn: () => listCirclesForViewer(identity!.pubkey),
+    enabled: Boolean(identity),
+  });
   const vlogsQuery = useQuery({
     queryKey: ['archive', identity?.pubkey, search, favouritesOnly, circleId],
     queryFn: () => listVlogs(identity!.pubkey, { search, favouritesOnly, circleId, limit: 100 }),
@@ -28,9 +35,11 @@ export default function ArchiveScreen() {
   });
 
   const vlogs = vlogsQuery.data ?? [];
+  const nameFor = (pubkey: string) =>
+    pubkey === identity?.pubkey ? (identity?.label ?? 'You') : (contactsQuery.data?.[pubkey] ?? shortNpub(pubkey));
 
   return (
-    <Screen padded={false}>
+    <Screen padded={false} edges={['top', 'left', 'right']}>
       <FlatList
         data={vlogs}
         keyExtractor={(item) => item.id}
@@ -62,7 +71,7 @@ export default function ArchiveScreen() {
         }
         renderItem={({ item }) => (
           <View style={{ paddingHorizontal: theme.layout.screenMargin }}>
-            <VlogRow vlog={item} />
+            <VlogRow vlog={item} authorLabel={nameFor(item.authorPubkey)} />
           </View>
         )}
         ListEmptyComponent={

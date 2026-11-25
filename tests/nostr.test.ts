@@ -17,6 +17,7 @@ function makePayload(overrides: Partial<VlogKeyPayload> = {}): VlogKeyPayload {
     vlogId: 'vlog-1',
     clipId: 'clip-1',
     circleId: 'circle-1',
+    authorName: 'Leon',
     title: 'Sunday morning',
     description: 'Coffee and the park',
     format: FOLIO_FORMAT_FC1,
@@ -144,4 +145,57 @@ test('payload parsing rejects malformed or unsafe values', () => {
   assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, format: 'other' })]]), null);
   assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, v: 2 })]]), null);
   assert.equal(parseKeyPayload([['other-tag', JSON.stringify(good)]]), null);
+  assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, authorName: 'x'.repeat(41) })]]), null);
+  assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, authorName: '' })]]), null);
+});
+
+test('a valid encrypted thumbnail travels with the payload', () => {
+  const payload = makePayload({
+    thumbnail: {
+      url: 'https://blossom.example/thumb.jpg',
+      keyB64: bytesToBase64(new Uint8Array(32).fill(7)),
+      sha256: 'c'.repeat(64),
+      plaintextSha256: 'd'.repeat(64),
+      size: 4096,
+      plaintextSize: 4000,
+      mimeType: 'image/jpeg',
+      width: 720,
+      height: 405,
+    },
+  });
+
+  const parsed = parseKeyPayload([['folio-key', JSON.stringify(payload)]]);
+  assert.deepEqual(parsed, payload);
+});
+
+test('a malformed thumbnail is dropped without losing the video', () => {
+  const payload = makePayload({
+    thumbnail: {
+      url: 'https://blossom.example/thumb.jpg',
+      keyB64: bytesToBase64(new Uint8Array(32).fill(7)),
+      sha256: 'c'.repeat(64),
+      size: 4096,
+      mimeType: 'image/jpeg',
+      width: 720,
+      height: 405,
+    },
+  });
+
+  const tooLarge = parseKeyPayload([
+    ['folio-key', JSON.stringify({ ...payload, thumbnail: { ...payload.thumbnail, size: 99_999_999 } })],
+  ]);
+  assert.ok(tooLarge);
+  assert.equal(tooLarge.thumbnail, undefined);
+
+  const insecure = parseKeyPayload([
+    ['folio-key', JSON.stringify({ ...payload, thumbnail: { ...payload.thumbnail, url: 'javascript:alert(1)' } })],
+  ]);
+  assert.ok(insecure);
+  assert.equal(insecure.thumbnail, undefined);
+
+  const badKey = parseKeyPayload([
+    ['folio-key', JSON.stringify({ ...payload, thumbnail: { ...payload.thumbnail, keyB64: bytesToBase64(new Uint8Array(16)) } })],
+  ]);
+  assert.ok(badKey);
+  assert.equal(badKey.thumbnail, undefined);
 });

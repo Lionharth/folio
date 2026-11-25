@@ -94,22 +94,39 @@ Even with correct encryption, the following leaks:
 - Key messages include a URL and hashes inside the encrypted payload; the relay
   cannot read them, but the storage provider can correlate a download with an
   IP.
-- Circle names and titles are only ever inside encrypted payloads or local
-  SQLite, never in public events.
+- Circle names, titles and display names are only ever inside encrypted payloads
+  or local SQLite, never in public events. Folio does not fetch names from
+  public kind-0 metadata; names are learned from encrypted control messages and
+  key messages and cached in `contact_profiles`.
+- A name is self-asserted by the sender inside an authenticated gift wrap. It
+  proves which key claims the name, not that the human is who the name suggests.
+  Circle membership is the trust signal.
 - No anonymity claims are made.
 
 ## Membership authorization
 
 The circle model is application-level, not relay-level. NIP-29 is not used.
 Membership is local state in `circle_members` with roles and status, plus a
-monotonic `membership_version`. Today the owner's device is authoritative for
-that local record. There is no signed membership event shared between devices
-yet, so a second owner device cannot verify membership history. This is a
-known gap, listed in the Phase 3/7 work.
+monotonic `membership_version`. The owner's device is authoritative for that
+record. Invitations are delivered as encrypted NIP-17 control messages, which
+gives the invited device a signed statement from the owner; there is still no
+signed membership event that a second owner device can independently verify, so
+multi-owner history remains a known gap.
 
-A member can only decrypt a clip if they receive its media key. Recipients also
-verify the sender's signature on the seal and the rumor, so a relay cannot
-forge a key message from another member.
+Invitation rules:
+- the invitation is dropped unless its `circle.ownerPubkey` equals the gift-wrap
+  seal author (verified by `nostr-tools/nip59`), and the recipient is listed in
+  `circle.members`;
+- the invited member must explicitly accept in the UI before the circle appears
+  in their list;
+- removal increments `membership_version`, stops future keys, and never claims
+  to erase downloaded media.
+
+A member can only decrypt a clip if they receive its media key. Post keys are
+sent to `active` and `invited` members: the owner already authorized the invite,
+and this prevents a lost acceptance message from denying the invitee future
+posts. Recipients verify the sender's signature on the seal and the rumor, so a
+relay cannot forge a key message from another member.
 
 ## Storage provider risks
 

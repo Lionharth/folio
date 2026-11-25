@@ -13,13 +13,15 @@ import { ScreenScroll } from '../../components/ui/Screen';
 import { TextField } from '../../components/ui/TextField';
 import { LoadingState } from '../../components/ui/States';
 import {
-  addCircleMember,
   getCircle,
   listCircleMembers,
   removeCircleMember,
   setCircleMuted,
 } from '../../lib/database/vlogs';
+import { listContactNames } from '../../lib/database/contacts';
 import { pubkeyFromInput, shortNpub } from '../../lib/nostr/format';
+import { readSecretKey } from '../../lib/nostr/identity';
+import { inviteMember, resendInvite } from '../../services/circles';
 import { useSession } from '../../stores/session';
 import { useTheme } from '../../theme/ThemeProvider';
 
@@ -30,6 +32,8 @@ export default function CircleDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [memberInput, setMemberInput] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const contactsQuery = useQuery({ queryKey: ['contact-names'], queryFn: listContactNames });
 
   const detailQuery = useQuery({
     queryKey: ['circle', id],
@@ -43,6 +47,8 @@ export default function CircleDetailScreen() {
   const circle = detailQuery.data?.circle ?? null;
   const members = detailQuery.data?.members ?? [];
   const isOwner = circle?.ownerPubkey === identity?.pubkey;
+  const nameFor = (pubkey: string) =>
+    pubkey === identity?.pubkey ? (identity?.label ?? 'You') : (contactsQuery.data?.[pubkey] ?? shortNpub(pubkey));
 
   const invalidate = async () => {
     await Promise.all([
@@ -62,13 +68,36 @@ export default function CircleDetailScreen() {
       Alert.alert('That is you', 'You are already in every circle you own.');
       return;
     }
+    if (!identity) return;
     setBusy(true);
     try {
-      await addCircleMember(id, pubkey);
+      const secretKey = await readSecretKey(identity.id);
+      await inviteMember({ secretKey, circleId: id, memberPubkey: pubkey, ownerName: identity.label });
       setMemberInput('');
       await invalidate();
+      Alert.alert('Invitation sent', 'They will see the circle on their device after their next sync.');
     } catch (error) {
-      Alert.alert('Could not add member', error instanceof Error ? error.message : 'Unknown error');
+      Alert.alert(
+        'Could not send the invitation',
+        error instanceof Error
+          ? `${error.message}\n\nNo member was added. Check your connection and try again.`
+          : 'Unknown error'
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resend = async (pubkey: string) => {
+    if (!identity) return;
+    setBusy(true);
+    try {
+      const secretKey = await readSecretKey(identity.id);
+      await resendInvite({ secretKey, circleId: id, memberPubkey: pubkey, ownerName: identity.label });
+      await invalidate();
+      Alert.alert('Invitation resent', 'They will see it after their next sync.');
+    } catch (error) {
+      Alert.alert('Could not resend', error instanceof Error ? error.message : 'Unknown error');
     } finally {
       setBusy(false);
     }
@@ -150,15 +179,24 @@ export default function CircleDetailScreen() {
           {members.map((member, index) => (
             <View key={member.pubkey}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md, paddingVertical: theme.spacing.lg }}>
-                <Avatar name={shortNpub(member.pubkey)} />
+                <Avatar name={nameFor(member.pubkey)} />
                 <View style={{ flex: 1 }}>
                   <AppText variant="bodyStrong">
-                    {member.pubkey === identity?.pubkey ? 'You' : shortNpub(member.pubkey)}
+                    {member.pubkey === identity?.pubkey ? 'You' : nameFor(member.pubkey)}
                   </AppText>
                   <AppText variant="caption" color="textSecondary">
-                    {member.role} · {member.status}
+                    {member.role} · {member.status === 'invited' ? 'invitation pending' : member.status}
                   </AppText>
                 </View>
+                {isOwner && member.pubkey !== identity?.pubkey && member.status === 'invited' ? (
+                  <Pressable
+                    onPress={() => resend(member.pubkey)}
+                    accessibilityLabel="Resend invitation"
+                    style={{ width: theme.layout.minTouchTarget, height: theme.layout.minTouchTarget, alignItems: 'center', justifyContent: 'center' }}
+                  >
+                    <Feather name="send" size={18} color={theme.colors.textSecondary} />
+                  </Pressable>
+                ) : null}
                 {isOwner && member.pubkey !== identity?.pubkey ? (
                   <Pressable
                     onPress={() => removeMember(member.pubkey)}
@@ -180,8 +218,8 @@ export default function CircleDetailScreen() {
           <View style={{ gap: theme.spacing.md }}>
             <AppText variant="bodyStrong">Invite a friend</AppText>
             <AppText variant="caption" color="textSecondary">
-              Ask them for their Folio ID from Profile, then add it here. New posts will be encrypted for them. Media
-              shared before they joined is not sent automatically.
+              Ask them for their Folio ID from Profile, then add it here. The invitation is sent privately; the circle
+              appears on their device after they sync and accept. Media shared before they joined is not resent.
             </AppText>
             <TextField
               label="Folio ID"
@@ -191,7 +229,7 @@ export default function CircleDetailScreen() {
               autoCapitalize="none"
               autoCorrect={false}
             />
-            <Button label="Add to circle" variant="secondary" loading={busy} onPress={addMember} />
+            <Button label="Send invitation" variant="secondary" loading={busy} onPress={addMember} />
           </View>
         </Card>
       ) : null}

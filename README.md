@@ -17,7 +17,7 @@ No developer-operated backend. No follower counts. No algorithmic feed.
 | 0 — Repository inspection and feasibility research | Done (see the docs below) |
 | 1 — Encrypted video sharing proof of concept | **Passed on the emulator** with two identities, real relays and a real Blossom provider |
 | 2 — Application foundation (design system, onboarding, DB, identity) | Implemented |
-| 3 — Circles | Partial: creation, members, roles stored, mute, membership version, removal; no signed cross-device membership events |
+| 3 — Circles | Creation, private encrypted invitations, acceptance, invited/active states, roles stored, mute, membership version, removal; no signed multi-owner membership history |
 | 4 — Video creation and sharing | Single-clip publish works end to end; multi-clip data model and sequential player exist; camera UI implemented but not exercised |
 | 5 — Feed and archive | Chronological feed, circle filter, unread, archive search/favourites |
 | 6 — Reactions and comments | Not implemented |
@@ -30,13 +30,14 @@ device.
 ## What works end to end
 
 1. Create an identity (Nostr keypair) without knowing what Nostr is.
-2. Create a private circle and add a member by npub.
+2. Create a private circle, invite a member by npub, and let it appear on their device after they accept.
 3. Record a clip or import one from the library.
 4. Encrypt it locally into the FOLIO-FC1 container (AES-256-GCM, chunked).
 5. Upload the ciphertext to a Blossom provider with BUD-11 authorization.
 6. Gift-wrap the media key to each member with NIP-17/NIP-44/NIP-59.
 7. Receive, verify, decrypt and play the clip on the recipient identity.
 8. Browse a strictly chronological updates feed and a searchable archive.
+9. See friends by name, learned privately from encrypted messages, with an npub fallback.
 
 ### Verified in this build
 

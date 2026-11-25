@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Private display names: the owner's name travels with invitations, the
+  invitee's name with acceptance, and every post carries its author's name.
+  Names are cached in `contact_profiles` (schema v4) and shown in circles, the
+  feed, the archive and the player instead of long npubs, with npub fallback
+  when a name is not known.
+
+### Fixed
+
+- The tab bar now respects the Android navigation-bar inset, so it is not
+  hidden under 3-button or gesture navigation. Full-screen screens also include
+  the bottom safe area.
+- Circles now reach invited members: the owner sends a private NIP-17
+  `circle-invite` control message, the invitee sees a pending invitation on the
+  Circles tab, and accepting adds the circle locally and notifies the owner.
+  Members are recorded as `invited` until acceptance; post keys are delivered to
+  invited members too, so a lost acceptance cannot lock them out.
+- Invitations are only trusted when the claimed owner signed them and the
+  recipient is in the roster.
+- The previous "add member" flow only changed the owner's local database; it
+  now explains that delivery failed instead of silently pretending success.
+
+### Added
+
+- `circle_invites` table (schema v3), invitation UI with accept/decline, resend,
+  and owner-side acceptance handling.
+- 5 more tests for control-message wrapping and validation (25 total).
+
+### Verified on device
+
+- Private names verified on device: A invited B; B's invitation said "From
+  Leon" and B joined; A then saw "Sam" instead of an npub, and B's feed showed
+  "Leon · Weekend" as the author. Schema v4 migrated in place.
+- 3-button Android navigation: tab bar renders above the system bar.
+- Identity A created "Weekend" and invited identity B. B's Circles tab showed
+  "1 invitation found"; the circle was hidden until B accepted. After accepting,
+  B saw the circle. A's next sync reported "Membership updated" and B became
+  `member · active`.
+
 ## 0.1.0 — Phase 0/1 feasibility build
 
 ### Added

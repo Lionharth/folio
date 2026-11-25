@@ -59,10 +59,12 @@ UI only ever shows a display name and a shortened npub.
 ## Local schema (SQLite, `folio.db`)
 
 `settings`, `relays`, `media_providers`, `circles`, `circle_members`, `vlogs`,
-`clips`, `drafts`, `draft_clips`, `upload_jobs`, `favourites`.
+`clips`, `drafts`, `draft_clips`, `upload_jobs`, `favourites`, `circle_invites`,
+`contact_profiles`.
 
 Migrations use `PRAGMA user_version`; schema version 2 adds
-`vlogs.viewer_pubkey`.
+`vlogs.viewer_pubkey`, version 3 adds `circle_invites`, version 4 adds `contact_profiles` and the
+private name fields on invitations.
 
 Design choices:
 - Every vlog row belongs to a viewer identity (`viewer_pubkey`). Local ids are
@@ -92,6 +94,35 @@ Design choices:
 
 The vlog never becomes visible to a recipient before its media blob exists and
 has been hashed by the uploader.
+
+## Circle invitations
+
+An owner invites with `src/services/circles.ts`:
+1. build the roster from the current local circle plus the invitee,
+2. wrap a `circle-invite` control message (`kind: 14`) for the invitee,
+3. publish it to their kind-10050 relays,
+4. only then record them as `invited` — a failed delivery never claims they were
+   invited.
+
+The recipient's `refreshInbox` unwraps the control message, checks that the
+sender is the claimed owner and that the recipient is in the roster, stores a
+pending invitation, and shows it on the Circles tab. `listCirclesForViewer` only
+returns circles where the active identity's membership is `active`, so an
+invitation does not leak into that identity's circle pickers before acceptance.
+Accepting creates the circle locally and sends a `circle-accept` back; the owner
+marks the member `active` on its next sync. See PROTOCOLS.md.
+
+## Display names
+
+`contact_profiles` is a local cache of names learned from encrypted messages:
+`authorName` on key messages, `ownerName`/`names` on invitations and
+`memberName` on acceptances. The UI resolves a member or author through this
+cache and falls back to a shortened npub when no name is known. No public
+metadata event is read or published.
+
+Invitations carry the owner's name plus the names the owner already knows for
+the roster, so a new member sees people by name immediately. An existing member
+learns a newly added member's name when that member accepts or posts.
 
 ## Receive flow (`src/services/inbox.ts`, `src/services/playback.ts`)
 

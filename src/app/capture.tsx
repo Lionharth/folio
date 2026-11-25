@@ -6,6 +6,7 @@ import Feather from '@expo/vector-icons/Feather';
 
 import { AppText } from '../components/ui/AppText';
 import { Button } from '../components/ui/Button';
+import { MAX_VIDEO_BYTES } from '../constants/media';
 import { useCaptureStore } from '../stores/capture';
 import { useTheme } from '../theme/ThemeProvider';
 import { formatDuration } from '../utils/time';
@@ -33,7 +34,10 @@ export default function CaptureScreen() {
       setRecording(true);
       startedAt.current = Date.now();
       setElapsed(0);
-      const result = await cameraRef.current.recordAsync({ maxDuration: 600 });
+      const result = await cameraRef.current.recordAsync({
+        maxDuration: 600,
+        maxFileSize: MAX_VIDEO_BYTES,
+      });
       if (result?.uri) {
         setCaptured({
           uri: result.uri,
@@ -143,7 +147,7 @@ export default function CaptureScreen() {
           />
         </Pressable>
         <AppText variant="caption" style={{ color: 'rgba(255,255,255,0.75)' }}>
-          {recording ? 'Tap to finish' : 'Tap to record'}
+          {recording ? 'Tap to finish · stops at 25 MB' : 'Tap to record · 1080p · 25 MB max'}
         </AppText>
       </View>
     </View>

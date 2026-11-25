@@ -9,6 +9,8 @@ import { Screen } from '../../components/ui/Screen';
 import { TextField } from '../../components/ui/TextField';
 import { createCircle } from '../../lib/database/vlogs';
 import { pubkeyFromInput } from '../../lib/nostr/format';
+import { readSecretKey } from '../../lib/nostr/identity';
+import { inviteMember } from '../../services/circles';
 import { useSession } from '../../stores/session';
 import { useTheme } from '../../theme/ThemeProvider';
 
@@ -42,8 +44,21 @@ export default function NewCircleScreen() {
         ownerPubkey: identity.pubkey,
         name: trimmedName,
         description: description.trim() || undefined,
-        members: memberPubkey ? [{ pubkey: memberPubkey }] : [],
+        members: [],
       });
+      if (memberPubkey) {
+        try {
+          const secretKey = await readSecretKey(identity.id);
+          await inviteMember({ secretKey, circleId: circle.id, memberPubkey, ownerName: identity.label });
+        } catch (inviteError) {
+          Alert.alert(
+            'Circle created, invitation not sent',
+            inviteError instanceof Error
+              ? `${inviteError.message}\n\nOpen the circle to resend the invitation.`
+              : 'Open the circle to resend the invitation.'
+          );
+        }
+      }
       router.replace({ pathname: '/circle/[id]', params: { id: circle.id } });
     } catch (error) {
       Alert.alert('Could not create the circle', error instanceof Error ? error.message : 'Unknown error');

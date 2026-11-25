@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
 const DATABASE_NAME = 'folio.db';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 5;
 
 let database: SQLite.SQLiteDatabase | null = null;
 let opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS clips (
   width INTEGER,
   height INTEGER,
   local_uri TEXT,
+  thumbnail TEXT,
   state TEXT NOT NULL DEFAULT 'remote',
   created_at INTEGER NOT NULL,
   FOREIGN KEY (vlog_id) REFERENCES vlogs(id) ON DELETE CASCADE
@@ -149,6 +150,45 @@ UPDATE vlogs SET viewer_pubkey = author_pubkey WHERE viewer_pubkey = '';
 CREATE INDEX IF NOT EXISTS vlogs_viewer_idx ON vlogs (viewer_pubkey, created_at DESC);
 `;
 
+const MIGRATION_3 = `
+CREATE TABLE IF NOT EXISTS circle_invites (
+  id TEXT PRIMARY KEY NOT NULL,
+  circle_id TEXT NOT NULL,
+  owner_pubkey TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  members TEXT NOT NULL,
+  membership_version INTEGER NOT NULL,
+  invited_at INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS circle_invites_unique
+  ON circle_invites (circle_id, owner_pubkey, membership_version);
+CREATE INDEX IF NOT EXISTS circle_invites_status_idx ON circle_invites (status, received_at DESC);
+`;
+
+const MIGRATION_4_TABLE = `
+CREATE TABLE IF NOT EXISTS contact_profiles (
+  pubkey TEXT PRIMARY KEY NOT NULL,
+  display_name TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`;
+
+async function addColumnIfMissing(
+  db: SQLite.SQLiteDatabase,
+  table: string,
+  column: string,
+  definition: string
+): Promise<void> {
+  const columns = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table});`);
+  if (!columns.some((entry) => entry.name === column)) {
+    await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  }
+}
+
 async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL;');
   await db.execAsync('PRAGMA foreign_keys = ON;');
@@ -164,6 +204,17 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
       if (String(error).includes('duplicate column')) return;
       throw error;
     });
+  }
+  if (current < 3) {
+    await db.execAsync(MIGRATION_3);
+  }
+  if (current < 4) {
+    await db.execAsync(MIGRATION_4_TABLE);
+    await addColumnIfMissing(db, 'circle_invites', 'owner_name', 'TEXT');
+    await addColumnIfMissing(db, 'circle_invites', 'member_names', 'TEXT');
+  }
+  if (current < 5) {
+    await addColumnIfMissing(db, 'clips', 'thumbnail', 'TEXT');
   }
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }
