@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
 const DATABASE_NAME = 'folio.db';
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 let database: SQLite.SQLiteDatabase | null = null;
 let opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -177,6 +177,36 @@ CREATE TABLE IF NOT EXISTS contact_profiles (
 );
 `;
 
+const MIGRATION_6_TABLES = `
+CREATE TABLE IF NOT EXISTS circle_memberships (
+  recipient_pubkey TEXT NOT NULL,
+  circle_id TEXT NOT NULL,
+  owner_pubkey TEXT NOT NULL,
+  membership_version INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  payload TEXT NOT NULL,
+  published_at INTEGER,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (recipient_pubkey, circle_id, owner_pubkey)
+);
+
+CREATE INDEX IF NOT EXISTS circle_memberships_publish_idx
+  ON circle_memberships (recipient_pubkey, published_at);
+
+CREATE TABLE IF NOT EXISTS control_outbox (
+  id TEXT PRIMARY KEY NOT NULL,
+  sender_pubkey TEXT NOT NULL,
+  recipient_pubkey TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  sent_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS control_outbox_sender_idx
+  ON control_outbox (sender_pubkey, sent_at);
+`;
+
 async function addColumnIfMissing(
   db: SQLite.SQLiteDatabase,
   table: string,
@@ -215,6 +245,21 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
   }
   if (current < 5) {
     await addColumnIfMissing(db, 'clips', 'thumbnail', 'TEXT');
+  }
+  if (current < 6) {
+    await db.execAsync(MIGRATION_6_TABLES);
+    await addColumnIfMissing(db, 'circle_invites', 'recipient_pubkey', 'TEXT');
+    // Legacy invitations were not scoped to an identity, so they cannot be
+    // attributed safely. They are re-fetched on the next sync.
+    await db.execAsync(`
+      DROP INDEX IF EXISTS circle_invites_unique;
+      DROP INDEX IF EXISTS circle_invites_status_idx;
+      DELETE FROM circle_invites WHERE recipient_pubkey IS NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS circle_invites_unique
+        ON circle_invites (recipient_pubkey, circle_id, owner_pubkey, membership_version);
+      CREATE INDEX IF NOT EXISTS circle_invites_recipient_status_idx
+        ON circle_invites (recipient_pubkey, status, received_at DESC);
+    `);
   }
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }

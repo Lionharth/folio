@@ -134,6 +134,37 @@ Acceptance:
 { "v": 1, "type": "circle-accept", "circleId": "uuid", "memberPubkey": "<hex>", "memberName": "Sam", "at": 1700000100 }
 ```
 
+Durable membership receipt (accepted, declined and removed circles):
+
+```json
+{
+  "v": 1,
+  "type": "circle-membership",
+  "action": "join",
+  "circleId": "uuid",
+  "ownerPubkey": "<hex>",
+  "memberPubkey": "<hex>",
+  "membershipVersion": 2,
+  "at": 1700000100,
+  "circle": {
+    "id": "uuid",
+    "name": "Close friends",
+    "description": "optional",
+    "ownerPubkey": "<hex>",
+    "ownerName": "Leon",
+    "membershipVersion": 2,
+    "members": ["<owner>", "<member>"],
+    "names": { "<owner>": "Leon", "<member>": "Sam" }
+  }
+}
+```
+
+`action` is `join`, `decline` or `removed`. A `join` receipt always carries
+the `circle` snapshot so a new device can rebuild the circle without the
+original invitation. The snapshot is optional for other actions. Receipts are
+gift-wrapped to the member's own inbox; an owner sends `removed` to the member
+being removed.
+
 Rules enforced in `src/lib/nostr/circleControl.ts` and `src/services/inbox.ts`:
 
 - `circle.ownerPubkey` must equal the rumor author, otherwise the invite is
@@ -146,13 +177,30 @@ Rules enforced in `src/lib/nostr/circleControl.ts` and `src/services/inbox.ts`:
   a key outside the roster, a non-hex key or an invalid name is rejected.
 - an acceptance is only applied when its `memberPubkey` equals the sender and
   the local circle is owned by the receiver.
-- invitations are deduplicated by (circle, owner, membership version).
+- invitations are deduplicated by (recipient, circle, owner, membership
+  version).
+- a membership receipt is only applied when its `memberPubkey` equals the local
+  public key. Self-authored receipts need sender = member; a `removed` receipt
+  needs sender = `ownerPubkey`.
+- membership evidence is ordered by `(membershipVersion, at)`; newer evidence
+  replaces older evidence for the same `(recipient, circle, owner)`.
+- a receipt with a `circle` snapshot must match the top-level `circleId`,
+  `ownerPubkey` and `membershipVersion`. For `join`, the member must be in the
+  snapshot roster; for `removed`, the member is expected to be absent.
 
-On acceptance the member creates the circle locally and sends an acceptance to
-the owner. Acceptance delivery is best-effort, but the owner already authorized
-the invite, and post keys are delivered to both `invited` and `active` members,
-so a lost acceptance cannot lock the invitee out of future posts. Previously
-published media is not redistributed.
+On acceptance the member creates the circle locally, publishes a `join`
+receipt to their own inbox, and sends an acceptance to the owner. Receipt
+delivery is retried on later syncs; acceptance delivery is best-effort. The
+owner already authorized the invite, and post keys are delivered to both
+`invited` and `active` members, so a lost acceptance cannot lock the invitee out
+of future posts. Previously published media is not redistributed.
+
+On restore (new device, fresh install, or recovery-key import), the inbox sync
+applies the newest receipt per circle. A `join` rebuilds the circle silently; a
+`decline` or owner `removed` keeps the circle away. Invitations at or below the
+receipt's version are never shown as pending. A newer invitation is a genuine
+re-invite and asks again. Removal notices are queued in `control_outbox` on the
+owner's device until a relay accepts them.
 
 ## FOLIO-FC1
 

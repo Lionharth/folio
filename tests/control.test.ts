@@ -9,6 +9,7 @@ import {
   wrapControl,
   type CircleAcceptPayload,
   type CircleInvitePayload,
+  type CircleMembershipPayload,
 } from '../src/lib/nostr/circleControl';
 
 function inviteFor(ownerPubkey: string, members: string[]): CircleInvitePayload {
@@ -116,6 +117,81 @@ test('control payload validation rejects malformed or unsafe values', () => {
     parseControlPayload(wrapTag({ v: 1, type: 'circle-accept', circleId: 'c', memberPubkey: 'bad', at: 1 })),
     null
   );
+});
+
+function membershipFor(
+  ownerPubkey: string,
+  memberPubkey: string,
+  action: CircleMembershipPayload['action'] = 'join',
+  members: string[] = [ownerPubkey, memberPubkey]
+): CircleMembershipPayload {
+  return {
+    v: 1,
+    type: 'circle-membership',
+    action,
+    circleId: 'circle-1',
+    ownerPubkey,
+    memberPubkey,
+    membershipVersion: 3,
+    at: 1_700_000_200,
+    circle: {
+      ...inviteFor(ownerPubkey, members).circle,
+    },
+  };
+}
+
+test('membership receipts round-trip through NIP-59 to the identity itself', () => {
+  const owner = generateSecretKey();
+  const member = generateSecretKey();
+  const ownerPub = getPublicKey(owner);
+  const memberPub = getPublicKey(member);
+  const receipt = membershipFor(ownerPub, memberPub);
+
+  const { wrap } = wrapControl(receipt, member, memberPub);
+  const rumor = unwrapEvent(wrap, member);
+  assert.equal(rumor.pubkey, memberPub);
+  assert.deepEqual(parseControlPayload(rumor.tags), receipt);
+});
+
+test('membership receipts validate the snapshot and owner linkage', () => {
+  const owner = generateSecretKey();
+  const ownerPub = getPublicKey(owner);
+  const memberPub = getPublicKey(generateSecretKey());
+  const valid = membershipFor(ownerPub, memberPub);
+  const wrapTag = (value: unknown) => [[FOLIO_CONTROL_TAG, JSON.stringify(value)]];
+
+  assert.ok(parseControlPayload(wrapTag(valid)));
+  assert.ok(parseControlPayload(wrapTag(membershipFor(ownerPub, memberPub, 'decline'))));
+  assert.equal(parseControlPayload(wrapTag({ ...valid, action: 'unknown' })), null);
+  assert.equal(parseControlPayload(wrapTag({ ...valid, memberPubkey: 'bad' })), null);
+  assert.equal(parseControlPayload(wrapTag({ ...valid, membershipVersion: 0 })), null);
+  assert.equal(parseControlPayload(wrapTag({ ...valid, at: 'now' })), null);
+  assert.equal(parseControlPayload(wrapTag({ ...valid, circle: undefined })), null);
+  assert.equal(
+    parseControlPayload(wrapTag({ ...valid, circle: { ...valid.circle, id: 'other' } })),
+    null
+  );
+  assert.equal(
+    parseControlPayload(wrapTag({ ...valid, circle: { ...valid.circle, ownerPubkey: getPublicKey(generateSecretKey()) } })),
+    null
+  );
+  assert.equal(
+    parseControlPayload(wrapTag({ ...valid, circle: { ...valid.circle, membershipVersion: 4 } })),
+    null
+  );
+  assert.equal(
+    parseControlPayload(wrapTag({ ...valid, circle: { ...valid.circle, members: [ownerPub] } })),
+    null
+  );
+});
+
+test('a removal snapshot may exclude the removed member', () => {
+  const owner = generateSecretKey();
+  const ownerPub = getPublicKey(owner);
+  const memberPub = getPublicKey(generateSecretKey());
+  const receipt = membershipFor(ownerPub, memberPub, 'removed', [ownerPub]);
+  const parsed = parseControlPayload([[FOLIO_CONTROL_TAG, JSON.stringify(receipt)]]);
+  assert.deepEqual(parsed, receipt);
 });
 
 test('duplicate roster entries are collapsed', () => {

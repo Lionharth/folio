@@ -60,11 +60,12 @@ UI only ever shows a display name and a shortened npub.
 
 `settings`, `relays`, `media_providers`, `circles`, `circle_members`, `vlogs`,
 `clips`, `drafts`, `draft_clips`, `upload_jobs`, `favourites`, `circle_invites`,
-`contact_profiles`.
+`contact_profiles`, `circle_memberships`, `control_outbox`.
 
 Migrations use `PRAGMA user_version`; schema version 2 adds
 `vlogs.viewer_pubkey`, version 3 adds `circle_invites`, version 4 adds `contact_profiles` and the
-private name fields on invitations.
+private name fields on invitations, version 6 scopes invitations to a recipient
+and adds durable membership receipts plus the control outbox.
 
 Design choices:
 - Every vlog row belongs to a viewer identity (`viewer_pubkey`). Local ids are
@@ -111,6 +112,25 @@ returns circles where the active identity's membership is `active`, so an
 invitation does not leak into that identity's circle pickers before acceptance.
 Accepting creates the circle locally and sends a `circle-accept` back; the owner
 marks the member `active` on its next sync. See PROTOCOLS.md.
+
+Membership is durable across devices. Accepting, declining and being removed
+store a `circle-membership` receipt in `circle_memberships` and publish it to
+the identity's own inbox. On a new device the same sync applies the newest
+receipt first: a `join` rebuilds the circle from its encrypted snapshot, a
+`decline` keeps the invitation suppressed, and an owner-signed `removed` marks
+the member removed. Invitations at or below the receipt's membership version
+never show Accept again; a genuinely newer invitation still does. Before this
+receipt existed, the first sync after upgrading seeds join receipts for circles
+the identity already belongs to, so they become restorable too.
+
+Owner removal is delivered as a `circle-membership` message to the removed
+member through `control_outbox`; retries continue on later syncs. A member
+recorded as `invited` or `active` on the owner's device keeps receiving post
+keys until removal, so losing an acceptance cannot lock them out.
+
+The inbox sync runs once in the background when the tabs mount, which is what
+restores circles immediately after an identity import. Manual pull-to-refresh
+still exposes relay errors.
 
 ## Display names
 

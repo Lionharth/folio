@@ -4,6 +4,7 @@ export type InviteStatus = 'pending' | 'accepted' | 'declined';
 
 export interface CircleInvite {
   id: string;
+  recipientPubkey: string;
   circleId: string;
   ownerPubkey: string;
   ownerName?: string | null;
@@ -19,6 +20,7 @@ export interface CircleInvite {
 
 interface InviteRow {
   id: string;
+  recipient_pubkey: string;
   circle_id: string;
   owner_pubkey: string;
   owner_name: string | null;
@@ -32,8 +34,13 @@ interface InviteRow {
   status: string;
 }
 
-export function inviteId(ownerPubkey: string, circleId: string, membershipVersion: number): string {
-  return `${ownerPubkey.slice(0, 10)}-${circleId}-v${membershipVersion}`;
+export function inviteId(
+  recipientPubkey: string,
+  ownerPubkey: string,
+  circleId: string,
+  membershipVersion: number
+): string {
+  return `${recipientPubkey.slice(0, 10)}-${ownerPubkey.slice(0, 10)}-${circleId}-v${membershipVersion}`;
 }
 
 function mapInvite(row: InviteRow): CircleInvite {
@@ -54,6 +61,7 @@ function mapInvite(row: InviteRow): CircleInvite {
   }
   return {
     id: row.id,
+    recipientPubkey: row.recipient_pubkey,
     circleId: row.circle_id,
     ownerPubkey: row.owner_pubkey,
     ownerName: row.owner_name,
@@ -69,6 +77,7 @@ function mapInvite(row: InviteRow): CircleInvite {
 }
 
 export async function upsertInvite(input: {
+  recipientPubkey: string;
   circleId: string;
   ownerPubkey: string;
   ownerName?: string | null;
@@ -80,12 +89,12 @@ export async function upsertInvite(input: {
   invitedAt: number;
 }): Promise<{ invite: CircleInvite; created: boolean }> {
   const db = await getDatabase();
-  const id = inviteId(input.ownerPubkey, input.circleId, input.membershipVersion);
-  const existing = await getInvite(id);
+  const id = inviteId(input.recipientPubkey, input.ownerPubkey, input.circleId, input.membershipVersion);
+  const existing = await getInvite(input.recipientPubkey, id);
   await db.runAsync(
-    `INSERT INTO circle_invites (id, circle_id, owner_pubkey, owner_name, name, description, members, member_names, membership_version, invited_at, received_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-     ON CONFLICT(circle_id, owner_pubkey, membership_version) DO UPDATE SET
+    `INSERT INTO circle_invites (id, recipient_pubkey, circle_id, owner_pubkey, owner_name, name, description, members, member_names, membership_version, invited_at, received_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+     ON CONFLICT(recipient_pubkey, circle_id, owner_pubkey, membership_version) DO UPDATE SET
        owner_name = COALESCE(excluded.owner_name, circle_invites.owner_name),
        name = excluded.name,
        description = excluded.description,
@@ -93,6 +102,7 @@ export async function upsertInvite(input: {
        member_names = COALESCE(excluded.member_names, circle_invites.member_names),
        received_at = excluded.received_at`,
     id,
+    input.recipientPubkey,
     input.circleId,
     input.ownerPubkey,
     input.ownerName ?? null,
@@ -104,31 +114,65 @@ export async function upsertInvite(input: {
     input.invitedAt,
     Date.now()
   );
-  const invite = await getInvite(id);
+  const invite = await getInvite(input.recipientPubkey, id);
   if (!invite) throw new Error('Invitation was not stored');
   return { invite, created: !existing };
 }
 
-export async function getInvite(id: string): Promise<CircleInvite | null> {
+export async function getInvite(recipientPubkey: string, id: string): Promise<CircleInvite | null> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<InviteRow>('SELECT * FROM circle_invites WHERE id = ?', id);
+  const row = await db.getFirstAsync<InviteRow>(
+    'SELECT * FROM circle_invites WHERE recipient_pubkey = ? AND id = ?',
+    recipientPubkey,
+    id
+  );
   return row ? mapInvite(row) : null;
 }
 
-export async function listPendingInvites(): Promise<CircleInvite[]> {
+export async function listPendingInvites(recipientPubkey: string): Promise<CircleInvite[]> {
   const db = await getDatabase();
   const rows = await db.getAllAsync<InviteRow>(
-    "SELECT * FROM circle_invites WHERE status = 'pending' ORDER BY received_at DESC"
+    "SELECT * FROM circle_invites WHERE recipient_pubkey = ? AND status = 'pending' ORDER BY received_at DESC",
+    recipientPubkey
   );
   return rows.map(mapInvite);
 }
 
-export async function setInviteStatus(id: string, status: InviteStatus): Promise<void> {
+export async function setInviteStatus(
+  recipientPubkey: string,
+  id: string,
+  status: InviteStatus
+): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync('UPDATE circle_invites SET status = ? WHERE id = ?', status, id);
+  await db.runAsync(
+    'UPDATE circle_invites SET status = ? WHERE recipient_pubkey = ? AND id = ?',
+    status,
+    recipientPubkey,
+    id
+  );
 }
 
-export async function deleteInvite(id: string): Promise<void> {
+/** Applies a membership outcome to every invitation up to a membership version. */
+export async function setInvitesStatusThroughVersion(input: {
+  recipientPubkey: string;
+  circleId: string;
+  ownerPubkey: string;
+  membershipVersion: number;
+  status: InviteStatus;
+}): Promise<void> {
   const db = await getDatabase();
-  await db.runAsync('DELETE FROM circle_invites WHERE id = ?', id);
+  await db.runAsync(
+    `UPDATE circle_invites SET status = ?
+     WHERE recipient_pubkey = ? AND circle_id = ? AND owner_pubkey = ? AND membership_version <= ?`,
+    input.status,
+    input.recipientPubkey,
+    input.circleId,
+    input.ownerPubkey,
+    input.membershipVersion
+  );
+}
+
+export async function deleteInvite(recipientPubkey: string, id: string): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync('DELETE FROM circle_invites WHERE recipient_pubkey = ? AND id = ?', recipientPubkey, id);
 }

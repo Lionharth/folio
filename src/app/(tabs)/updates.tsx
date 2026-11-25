@@ -58,6 +58,9 @@ export default function UpdatesScreen() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['vlogs'] }),
         queryClient.invalidateQueries({ queryKey: ['contact-names'] }),
+        queryClient.invalidateQueries({ queryKey: ['circles'] }),
+        queryClient.invalidateQueries({ queryKey: ['circles-with-members'] }),
+        queryClient.invalidateQueries({ queryKey: ['circle-invites'] }),
       ]);
     } catch (error) {
       setSyncMessage('Could not reach your relays');

@@ -12,16 +12,11 @@ import { Card, Divider } from '../../components/ui/Card';
 import { ScreenScroll } from '../../components/ui/Screen';
 import { TextField } from '../../components/ui/TextField';
 import { LoadingState } from '../../components/ui/States';
-import {
-  getCircle,
-  listCircleMembers,
-  removeCircleMember,
-  setCircleMuted,
-} from '../../lib/database/vlogs';
+import { getCircle, listCircleMembers, setCircleMuted } from '../../lib/database/vlogs';
 import { listContactNames } from '../../lib/database/contacts';
 import { pubkeyFromInput, shortNpub } from '../../lib/nostr/format';
 import { readSecretKey } from '../../lib/nostr/identity';
-import { inviteMember, resendInvite } from '../../services/circles';
+import { inviteMember, removeMember, resendInvite } from '../../services/circles';
 import { useSession } from '../../stores/session';
 import { useTheme } from '../../theme/ThemeProvider';
 
@@ -103,18 +98,34 @@ export default function CircleDetailScreen() {
     }
   };
 
-  const removeMember = (pubkey: string) => {
-    Alert.alert('Remove from circle?', 'They will not receive keys for future posts. Media they already saved stays on their device.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove',
-        style: 'destructive',
-        onPress: async () => {
-          await removeCircleMember(id, pubkey);
-          await invalidate();
+  const confirmRemove = (pubkey: string) => {
+    Alert.alert(
+      'Remove from circle?',
+      'They will not receive keys for future posts. Media they already saved stays on their device.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            if (!identity) return;
+            try {
+              const secretKey = await readSecretKey(identity.id);
+              const result = await removeMember({ secretKey, circleId: id, memberPubkey: pubkey });
+              await invalidate();
+              if (!result.delivered) {
+                Alert.alert(
+                  'Removed on this device',
+                  'Their device could not be reached yet. The removal will retry automatically the next time you sync.'
+                );
+              }
+            } catch (error) {
+              Alert.alert('Could not remove', error instanceof Error ? error.message : 'Unknown error');
+            }
+          },
         },
-      },
-    ]);
+      ]
+    );
   };
 
   if (detailQuery.isLoading) {
@@ -199,7 +210,7 @@ export default function CircleDetailScreen() {
                 ) : null}
                 {isOwner && member.pubkey !== identity?.pubkey ? (
                   <Pressable
-                    onPress={() => removeMember(member.pubkey)}
+                    onPress={() => confirmRemove(member.pubkey)}
                     accessibilityLabel="Remove member"
                     style={{ width: theme.layout.minTouchTarget, height: theme.layout.minTouchTarget, alignItems: 'center', justifyContent: 'center' }}
                   >

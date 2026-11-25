@@ -3,11 +3,13 @@ import { Tabs } from 'expo-router';
 import Feather from '@expo/vector-icons/Feather';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useInboxBootstrap } from '../../hooks/useInboxBootstrap';
 import { useTheme } from '../../theme/ThemeProvider';
 
 export default function TabsLayout() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  useInboxBootstrap();
   return (
     <Tabs
       screenOptions={{

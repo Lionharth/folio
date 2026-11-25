@@ -2,18 +2,42 @@ import { getPublicKey } from 'nostr-tools/pure';
 
 import { base64ToBytes } from '../lib/crypto/bytes';
 import { upsertContactName } from '../lib/database/contacts';
-import { upsertInvite } from '../lib/database/invites';
-import { getCircle, hasVlogByRumor, markCircleMemberActive, upsertVlog } from '../lib/database/vlogs';
+import { setInviteStatus, upsertInvite } from '../lib/database/invites';
+import { getMembershipEvidence, markReceiptPublished, upsertMembershipEvidence } from '../lib/database/memberships';
+import {
+  addCircleFromInvite,
+  getCircle,
+  getCircleMember,
+  hasVlogByRumor,
+  markCircleMemberActive,
+  upsertVlog,
+} from '../lib/database/vlogs';
+import {
+  type CircleInvitePayload,
+  type CircleMembershipPayload,
+} from '../lib/nostr/circleControl';
 import { fetchInboxMessages, type InboxMessage } from '../lib/nostr/dm';
+import { isNewerEvidence, decideInviteOutcome } from '../lib/nostr/membershipRules';
 import { DEFAULT_DM_RELAYS, createPool } from '../lib/nostr/relays';
 import { saveMediaKey, saveThumbnailKey } from '../lib/security/mediaKeys';
 import type { Clip, Vlog } from '../types/models';
+import {
+  flushControlOutbox,
+  flushMembershipReceipts,
+  recordMembershipReceipt,
+  restoreCircleFromReceipt,
+  seedMembershipReceipts,
+  sendCircleAccept,
+  suppressCircleFromReceipt,
+} from './membership';
 
 export interface InboxRefreshResult {
   received: number;
   added: number;
   invites: number;
   accepted: number;
+  restored: number;
+  suppressed: number;
   scanned: number;
 }
 
@@ -73,10 +97,54 @@ function toVlog(message: InboxMessage, viewerPubkey: string): { vlog: Vlog; clip
   return { vlog, clip };
 }
 
+interface EvidenceCandidate {
+  payload: CircleMembershipPayload;
+  source: 'self' | 'removed';
+}
+
+function evidenceOrder(payload: CircleMembershipPayload) {
+  return { membershipVersion: payload.membershipVersion, at: payload.at };
+}
+
+function considerCandidate(
+  candidates: Map<string, EvidenceCandidate>,
+  candidate: EvidenceCandidate
+): void {
+  const key = `${candidate.payload.circleId}:${candidate.payload.ownerPubkey}`;
+  const current = candidates.get(key);
+  if (!current || isNewerEvidence(evidenceOrder(candidate.payload), evidenceOrder(current.payload))) {
+    candidates.set(key, candidate);
+  }
+}
+
+async function learnNames(snapshot: CircleInvitePayload['circle']): Promise<void> {
+  if (snapshot.ownerName) await upsertContactName(snapshot.ownerPubkey, snapshot.ownerName);
+  if (snapshot.names) {
+    for (const [pubkey, name] of Object.entries(snapshot.names)) {
+      await upsertContactName(pubkey, name);
+    }
+  }
+}
+
+async function applyCircleSnapshot(snapshot: CircleInvitePayload['circle'], selfPubkey: string): Promise<boolean> {
+  const local = await getCircle(snapshot.id);
+  if (local && local.membershipVersion > snapshot.membershipVersion) return false;
+  await addCircleFromInvite({
+    id: snapshot.id,
+    ownerPubkey: snapshot.ownerPubkey,
+    name: snapshot.name,
+    description: snapshot.description ?? null,
+    membershipVersion: snapshot.membershipVersion,
+    members: snapshot.members,
+    selfPubkey,
+  });
+  return true;
+}
+
 /**
- * Pulls gift wraps addressed to this identity, decrypts key messages and circle
- * invitations, and persists anything new. Safe to call repeatedly: rumors are
- * deduplicated by id and invitations by circle/owner/version.
+ * Pulls gift wraps addressed to this identity, applies durable membership
+ * evidence, restores circles that were previously joined, and persists new
+ * invitations. Safe to call repeatedly.
  */
 export async function refreshInbox(
   secretKey: Uint8Array,
@@ -85,36 +153,72 @@ export async function refreshInbox(
   const pubkey = getPublicKey(secretKey);
   const pool = createPool({ secretKey });
   try {
-    const { files, controls } = await fetchInboxMessages(pool, relays, secretKey, { limit: 200 });
+    await flushMembershipReceipts(secretKey, pool);
+    await flushControlOutbox(secretKey, pool);
+
+    const { files, controls } = await fetchInboxMessages(pool, relays, secretKey, { limit: 500 });
+
+    const candidates = new Map<string, EvidenceCandidate>();
+    for (const control of controls) {
+      const payload = control.payload;
+      if (payload.type !== 'circle-membership') continue;
+      if (payload.memberPubkey !== pubkey) continue;
+
+      if (control.senderPubkey === pubkey) {
+        considerCandidate(candidates, { payload, source: 'self' });
+        continue;
+      }
+
+      if (payload.action !== 'removed') continue;
+      // Only the claimed owner can remove this identity. The owner key is also
+      // part of the evidence key, so a forged owner cannot suppress another
+      // circle's invitation.
+      if (payload.ownerPubkey !== control.senderPubkey) continue;
+      considerCandidate(candidates, { payload, source: 'removed' });
+    }
+
+    let restored = 0;
+    let suppressed = 0;
+    for (const candidate of candidates.values()) {
+      const { payload } = candidate;
+      const existing = await getMembershipEvidence(pubkey, payload.circleId, payload.ownerPubkey);
+      if (existing && !isNewerEvidence(evidenceOrder(payload), evidenceOrder(existing.payload))) {
+        continue;
+      }
+
+      if (candidate.source === 'self') {
+        const { stored } = await upsertMembershipEvidence({ recipientPubkey: pubkey, payload });
+        if (!stored) continue;
+        // It was received from a relay, so this evidence is already durable.
+        await markReceiptPublished({
+          recipientPubkey: pubkey,
+          circleId: payload.circleId,
+          ownerPubkey: payload.ownerPubkey,
+          membershipVersion: payload.membershipVersion,
+          publishedAt: Date.now(),
+        });
+      } else {
+        const result = await recordMembershipReceipt({ secretKey, payload, pool });
+        if (!result.evidence) continue;
+      }
+
+      if (payload.action === 'join') {
+        const result = await restoreCircleFromReceipt({
+          payload,
+          selfPubkey: pubkey,
+          secretKey,
+          pool,
+        });
+        if (result?.created) restored += 1;
+      } else {
+        await suppressCircleFromReceipt({ payload, selfPubkey: pubkey });
+        suppressed += 1;
+      }
+    }
 
     let invites = 0;
     let accepted = 0;
     for (const control of controls) {
-      if (control.payload.type === 'circle-invite') {
-        const { circle } = control.payload;
-        if (circle.ownerPubkey !== control.senderPubkey) continue;
-        if (!circle.members.includes(pubkey)) continue;
-        if (circle.ownerName) await upsertContactName(circle.ownerPubkey, circle.ownerName);
-        if (circle.names) {
-          for (const [pubkey, name] of Object.entries(circle.names)) {
-            await upsertContactName(pubkey, name);
-          }
-        }
-        const stored = await upsertInvite({
-          circleId: circle.id,
-          ownerPubkey: circle.ownerPubkey,
-          ownerName: circle.ownerName ?? null,
-          name: circle.name,
-          description: circle.description ?? null,
-          members: circle.members,
-          memberNames: circle.names,
-          membershipVersion: circle.membershipVersion,
-          invitedAt: control.payload.invitedAt,
-        });
-        if (stored.created) invites += 1;
-        continue;
-      }
-
       if (control.payload.type === 'circle-accept') {
         if (control.payload.memberPubkey !== control.senderPubkey) continue;
         if (control.payload.memberName) {
@@ -124,6 +228,68 @@ export async function refreshInbox(
         if (!circle || circle.ownerPubkey !== pubkey) continue;
         if (await markCircleMemberActive(circle.id, control.payload.memberPubkey)) {
           accepted += 1;
+        }
+        continue;
+      }
+
+      if (control.payload.type !== 'circle-invite') continue;
+      const { circle } = control.payload;
+      if (circle.ownerPubkey !== control.senderPubkey) continue;
+      if (!circle.members.includes(pubkey)) continue;
+      await learnNames(circle);
+
+      const selfMember = await getCircleMember(circle.id, pubkey);
+      const evidence = await getMembershipEvidence(pubkey, circle.id, circle.ownerPubkey);
+      const outcome = decideInviteOutcome({
+        inviteVersion: circle.membershipVersion,
+        selfStatus: selfMember?.status ?? null,
+        evidence: evidence
+          ? { action: evidence.action, membershipVersion: evidence.membershipVersion }
+          : null,
+      });
+
+      const stored = await upsertInvite({
+        recipientPubkey: pubkey,
+        circleId: circle.id,
+        ownerPubkey: circle.ownerPubkey,
+        ownerName: circle.ownerName ?? null,
+        name: circle.name,
+        description: circle.description ?? null,
+        members: circle.members,
+        memberNames: circle.names,
+        membershipVersion: circle.membershipVersion,
+        invitedAt: control.payload.invitedAt,
+      });
+
+      if (outcome === 'pending') {
+        if (stored.created) invites += 1;
+        continue;
+      }
+
+      if (outcome === 'suppress') {
+        await setInviteStatus(pubkey, stored.invite.id, 'declined');
+        suppressed += 1;
+        continue;
+      }
+
+      const wasActive = selfMember?.status === 'active';
+      const applied = await applyCircleSnapshot(circle, pubkey);
+      await setInviteStatus(pubkey, stored.invite.id, 'accepted');
+      if (outcome === 'restore') {
+        if (!wasActive && applied) {
+          restored += 1;
+          if (circle.ownerPubkey !== pubkey) {
+            try {
+              await sendCircleAccept({
+                pool,
+                secretKey,
+                ownerPubkey: circle.ownerPubkey,
+                circleId: circle.id,
+              });
+            } catch {
+              // Best-effort: the owner already authorized this invitation.
+            }
+          }
         }
       }
     }
@@ -143,11 +309,15 @@ export async function refreshInbox(
       added += 1;
     }
 
+    await seedMembershipReceipts(secretKey, pool);
+
     return {
       received: files.length + controls.length,
       added,
       invites,
       accepted,
+      restored,
+      suppressed,
       scanned: files.length + controls.length,
     };
   } finally {

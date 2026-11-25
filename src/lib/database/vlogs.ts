@@ -173,6 +173,30 @@ export async function listCircleMembers(circleId: string): Promise<CircleMember[
   return rows.map(mapMember);
 }
 
+export async function getCircleMember(circleId: string, pubkey: string): Promise<CircleMember | null> {
+  const db = await getDatabase();
+  const row = await db.getFirstAsync<MemberRow>(
+    'SELECT * FROM circle_members WHERE circle_id = ? AND pubkey = ?',
+    circleId,
+    pubkey
+  );
+  return row ? mapMember(row) : null;
+}
+
+/** Applies a remote removal without incrementing the owner's membership version again. */
+export async function markCircleMemberRemoved(circleId: string, pubkey: string): Promise<boolean> {
+  const db = await getDatabase();
+  const current = await getCircleMember(circleId, pubkey);
+  if (!current || current.status === 'removed') return false;
+  await db.runAsync(
+    "UPDATE circle_members SET status = 'removed' WHERE circle_id = ? AND pubkey = ?",
+    circleId,
+    pubkey
+  );
+  await db.runAsync('UPDATE circles SET updated_at = ? WHERE id = ?', Date.now(), circleId);
+  return true;
+}
+
 export async function createCircle(input: {
   id: string;
   ownerPubkey: string;

@@ -41,7 +41,11 @@ export default function CirclesScreen() {
     enabled: Boolean(identity),
   });
 
-  const invitesQuery = useQuery({ queryKey: ['circle-invites'], queryFn: listPendingInvites });
+  const invitesQuery = useQuery({
+    queryKey: ['circle-invites', identity?.pubkey],
+    queryFn: () => listPendingInvites(identity!.pubkey),
+    enabled: Boolean(identity),
+  });
 
   const circles = circlesQuery.data ?? [];
   const invites = invitesQuery.data ?? [];
@@ -63,7 +67,9 @@ export default function CirclesScreen() {
       const secretKey = await readSecretKey(identity.id);
       const result = await refreshInbox(secretKey);
       await invalidateAll();
-      if (result.invites > 0) setSyncMessage(`${result.invites} invitation${result.invites === 1 ? '' : 's'} found`);
+      if (result.restored > 0) {
+        setSyncMessage(`${result.restored} circle${result.restored === 1 ? '' : 's'} restored`);
+      } else if (result.invites > 0) setSyncMessage(`${result.invites} invitation${result.invites === 1 ? '' : 's'} found`);
       else if (result.accepted > 0) setSyncMessage('Membership updated');
       else setSyncMessage('No new invitations');
     } catch (error) {
@@ -101,8 +107,14 @@ export default function CirclesScreen() {
         text: 'Decline',
         style: 'destructive',
         onPress: async () => {
-          await declineInvite(invite);
-          await invalidateAll();
+          if (!identity) return;
+          try {
+            const secretKey = await readSecretKey(identity.id);
+            await declineInvite({ secretKey, inviteId: invite.id });
+            await invalidateAll();
+          } catch (error) {
+            Alert.alert('Could not decline', error instanceof Error ? error.message : 'Unknown error');
+          }
         },
       },
     ]);

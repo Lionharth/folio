@@ -31,7 +31,27 @@ export interface CircleAcceptPayload {
   at: number;
 }
 
-export type CircleControlPayload = CircleInvitePayload | CircleAcceptPayload;
+export type MembershipAction = 'join' | 'decline' | 'removed';
+
+/**
+ * Durable membership evidence. Accepted, declined and removed circles publish
+ * this to the member's own inbox so a new device can restore or suppress the
+ * circle without showing the invitation again.
+ */
+export interface CircleMembershipPayload {
+  v: 1;
+  type: 'circle-membership';
+  action: MembershipAction;
+  circleId: string;
+  ownerPubkey: string;
+  memberPubkey: string;
+  membershipVersion: number;
+  at: number;
+  /** Required for action=join: lets a new device rebuild the circle without the invite. */
+  circle?: CircleInvitePayload['circle'];
+}
+
+export type CircleControlPayload = CircleInvitePayload | CircleAcceptPayload | CircleMembershipPayload;
 
 const HEX64 = /^[0-9a-f]{64}$/;
 
@@ -66,6 +86,34 @@ function parseNames(value: unknown, allowed: string[]): Record<string, string> |
   return names;
 }
 
+function parseInviteCircle(value: unknown): CircleInvitePayload['circle'] | null {
+  if (!value || typeof value !== 'object') return null;
+  const circle = value as Record<string, unknown>;
+  if (!isNonEmptyString(circle.id, 120)) return null;
+  if (!isNonEmptyString(circle.name, 80)) return null;
+  if (circle.description !== undefined && (typeof circle.description !== 'string' || circle.description.length > 400)) {
+    return null;
+  }
+  if (!isHex64(circle.ownerPubkey)) return null;
+  if (!Number.isInteger(circle.membershipVersion) || (circle.membershipVersion as number) < 1) return null;
+  if (!Array.isArray(circle.members) || circle.members.length === 0 || circle.members.length > 100) return null;
+  if (!circle.members.every(isHex64)) return null;
+  const members = [...new Set(circle.members as string[])];
+  if (circle.ownerName !== undefined && !normalizeName(circle.ownerName)) return null;
+  const names = parseNames(circle.names, members);
+  if (circle.names !== undefined && !names) return null;
+  return {
+    id: circle.id,
+    name: circle.name.trim(),
+    description: typeof circle.description === 'string' ? circle.description : undefined,
+    ownerPubkey: circle.ownerPubkey,
+    ownerName: normalizeName(circle.ownerName),
+    membershipVersion: circle.membershipVersion as number,
+    members,
+    names,
+  };
+}
+
 /**
  * Parses and validates an application control payload from an encrypted NIP-17
  * rumor. Invalid values are rejected instead of coerced.
@@ -84,36 +132,47 @@ export function parseControlPayload(tags: string[][]): CircleControlPayload | nu
   if (value.v !== 1) return null;
 
   if (value.type === 'circle-invite') {
-    const circle = value.circle as Record<string, unknown> | undefined;
-    if (!circle || typeof circle !== 'object') return null;
-    if (!isNonEmptyString(circle.id, 120)) return null;
-    if (!isNonEmptyString(circle.name, 80)) return null;
-    if (circle.description !== undefined && (typeof circle.description !== 'string' || circle.description.length > 400)) {
-      return null;
-    }
-    if (!isHex64(circle.ownerPubkey)) return null;
-    if (!Number.isInteger(circle.membershipVersion) || (circle.membershipVersion as number) < 1) return null;
-    if (!Array.isArray(circle.members) || circle.members.length === 0 || circle.members.length > 100) return null;
-    if (!circle.members.every(isHex64)) return null;
+    const circle = parseInviteCircle(value.circle);
+    if (!circle) return null;
     if (typeof value.invitedAt !== 'number' || !Number.isFinite(value.invitedAt)) return null;
-    const members = [...new Set(circle.members as string[])];
-    if (circle.ownerName !== undefined && !normalizeName(circle.ownerName)) return null;
-    const names = parseNames(circle.names, members);
-    if (circle.names !== undefined && !names) return null;
     return {
       v: 1,
       type: 'circle-invite',
-      circle: {
-        id: circle.id,
-        name: circle.name.trim(),
-        description: typeof circle.description === 'string' ? circle.description : undefined,
-        ownerPubkey: circle.ownerPubkey,
-        ownerName: normalizeName(circle.ownerName),
-        membershipVersion: circle.membershipVersion as number,
-        members,
-        names,
-      },
+      circle,
       invitedAt: value.invitedAt,
+    };
+  }
+
+  if (value.type === 'circle-membership') {
+    if (value.action !== 'join' && value.action !== 'decline' && value.action !== 'removed') return null;
+    if (!isNonEmptyString(value.circleId, 120)) return null;
+    if (!isHex64(value.ownerPubkey)) return null;
+    if (!isHex64(value.memberPubkey)) return null;
+    if (!Number.isInteger(value.membershipVersion) || (value.membershipVersion as number) < 1) return null;
+    if (typeof value.at !== 'number' || !Number.isFinite(value.at)) return null;
+    let circle: CircleInvitePayload['circle'] | undefined;
+    if (value.circle !== undefined) {
+      const parsedCircle = parseInviteCircle(value.circle);
+      if (!parsedCircle) return null;
+      if (parsedCircle.id !== value.circleId) return null;
+      if (parsedCircle.ownerPubkey !== value.ownerPubkey) return null;
+      if (parsedCircle.membershipVersion !== value.membershipVersion) return null;
+      if (value.action !== 'removed' && !parsedCircle.members.includes(value.memberPubkey)) {
+        return null;
+      }
+      circle = parsedCircle;
+    }
+    if (value.action === 'join' && !circle) return null;
+    return {
+      v: 1,
+      type: 'circle-membership',
+      action: value.action,
+      circleId: value.circleId,
+      ownerPubkey: value.ownerPubkey,
+      memberPubkey: value.memberPubkey,
+      membershipVersion: value.membershipVersion as number,
+      at: value.at,
+      circle,
     };
   }
 

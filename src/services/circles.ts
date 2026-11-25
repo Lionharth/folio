@@ -2,10 +2,26 @@ import { getPublicKey } from 'nostr-tools/pure';
 
 import { getInvite, setInviteStatus, type CircleInvite } from '../lib/database/invites';
 import { listContactNames } from '../lib/database/contacts';
-import { addCircleFromInvite, addCircleMember, getCircle, listCircleMembers } from '../lib/database/vlogs';
-import { wrapControl, type CircleControlPayload } from '../lib/nostr/circleControl';
+import { enqueueControl, markControlSent } from '../lib/database/outbox';
+import {
+  addCircleFromInvite,
+  addCircleMember,
+  getCircle,
+  listCircleMembers,
+  removeCircleMember,
+} from '../lib/database/vlogs';
+import {
+  wrapControl,
+  type CircleControlPayload,
+  type CircleMembershipPayload,
+} from '../lib/nostr/circleControl';
 import { DEFAULT_DM_RELAYS, createPool, publishToRelays, type Pool } from '../lib/nostr/relays';
 import { resolveInboxRelays } from '../lib/nostr/dm';
+import {
+  buildCircleSnapshot,
+  publishMembershipControl,
+  recordMembershipReceipt,
+} from './membership';
 
 export class InviteDeliveryError extends Error {
   constructor(message: string) {
@@ -148,6 +164,19 @@ export interface AcceptInviteResult {
   ownerNotified: boolean;
 }
 
+function snapshotFromInvite(invite: CircleInvite): CircleMembershipPayload['circle'] {
+  return {
+    id: invite.circleId,
+    name: invite.name,
+    description: invite.description ?? undefined,
+    ownerPubkey: invite.ownerPubkey,
+    ownerName: invite.ownerName ?? undefined,
+    membershipVersion: invite.membershipVersion,
+    members: invite.members,
+    names: Object.keys(invite.memberNames).length > 0 ? invite.memberNames : undefined,
+  };
+}
+
 /**
  * Joins the circle locally and notifies the owner. Notification is best-effort:
  * the owner already invited this member, and future posts are delivered to
@@ -158,11 +187,11 @@ export async function acceptInvite(input: {
   inviteId: string;
   memberName?: string;
 }): Promise<AcceptInviteResult> {
-  const invite = await getInvite(input.inviteId);
+  const selfPubkey = getPublicKey(input.secretKey);
+  const invite = await getInvite(selfPubkey, input.inviteId);
   if (!invite) throw new Error('This invitation is no longer available');
   if (invite.status !== 'pending') throw new Error('This invitation was already handled');
 
-  const selfPubkey = getPublicKey(input.secretKey);
   await addCircleFromInvite({
     id: invite.circleId,
     ownerPubkey: invite.ownerPubkey,
@@ -172,7 +201,22 @@ export async function acceptInvite(input: {
     members: invite.members,
     selfPubkey,
   });
-  await setInviteStatus(invite.id, 'accepted');
+  await setInviteStatus(selfPubkey, invite.id, 'accepted');
+
+  const receipt: CircleMembershipPayload = {
+    v: 1,
+    type: 'circle-membership',
+    action: 'join',
+    circleId: invite.circleId,
+    ownerPubkey: invite.ownerPubkey,
+    memberPubkey: selfPubkey,
+    membershipVersion: invite.membershipVersion,
+    at: Math.floor(Date.now() / 1000),
+    circle: snapshotFromInvite(invite),
+  };
+  // Store the restore proof before notifying the owner, so a lost acceptance
+  // still lets this identity rejoin on a new device.
+  await recordMembershipReceipt({ secretKey: input.secretKey, payload: receipt });
 
   let ownerNotified = false;
   try {
@@ -194,6 +238,92 @@ export async function acceptInvite(input: {
   return { circleName: invite.name, ownerNotified };
 }
 
-export async function declineInvite(invite: CircleInvite): Promise<void> {
-  await setInviteStatus(invite.id, 'declined');
+export async function declineInvite(input: {
+  secretKey: Uint8Array;
+  inviteId: string;
+}): Promise<void> {
+  const selfPubkey = getPublicKey(input.secretKey);
+  const invite = await getInvite(selfPubkey, input.inviteId);
+  if (!invite) throw new Error('This invitation is no longer available');
+  if (invite.status !== 'pending') return;
+
+  await setInviteStatus(selfPubkey, invite.id, 'declined');
+  const receipt: CircleMembershipPayload = {
+    v: 1,
+    type: 'circle-membership',
+    action: 'decline',
+    circleId: invite.circleId,
+    ownerPubkey: invite.ownerPubkey,
+    memberPubkey: selfPubkey,
+    membershipVersion: invite.membershipVersion,
+    at: Math.floor(Date.now() / 1000),
+    circle: snapshotFromInvite(invite),
+  };
+  await recordMembershipReceipt({ secretKey: input.secretKey, payload: receipt });
+}
+
+export interface RemoveMemberResult {
+  delivered: boolean;
+}
+
+/**
+ * Removes a member locally and tells them privately. Delivery is queued in the
+ * control outbox and retried on the next sync, so an offline owner still stops
+ * sending future keys immediately.
+ */
+export async function removeMember(input: {
+  secretKey: Uint8Array;
+  circleId: string;
+  memberPubkey: string;
+}): Promise<RemoveMemberResult> {
+  const circle = await getCircle(input.circleId);
+  if (!circle) throw new InviteDeliveryError('This circle no longer exists');
+  const senderPubkey = getPublicKey(input.secretKey);
+  if (circle.ownerPubkey !== senderPubkey) {
+    throw new InviteDeliveryError('Only the circle owner can remove people');
+  }
+  if (input.memberPubkey === circle.ownerPubkey) {
+    throw new InviteDeliveryError('The owner cannot be removed from their own circle');
+  }
+
+  const members = await listCircleMembers(circle.id);
+  const existing = members.find((member) => member.pubkey === input.memberPubkey);
+  if (!existing) throw new InviteDeliveryError('That person is not in this circle');
+
+  const membershipVersion = circle.membershipVersion + 1;
+  const snapshot = await buildCircleSnapshot(circle, members, {
+    excludePubkey: input.memberPubkey,
+    membershipVersion,
+  });
+  const payload: CircleMembershipPayload = {
+    v: 1,
+    type: 'circle-membership',
+    action: 'removed',
+    circleId: circle.id,
+    ownerPubkey: circle.ownerPubkey,
+    memberPubkey: input.memberPubkey,
+    membershipVersion,
+    at: Math.floor(Date.now() / 1000),
+    circle: snapshot,
+  };
+
+  const outboxId = await enqueueControl({
+    senderPubkey,
+    recipientPubkey: input.memberPubkey,
+    payload,
+  });
+  await removeCircleMember(circle.id, input.memberPubkey);
+
+  let delivered = false;
+  try {
+    const accepted = await publishMembershipControl(input.secretKey, input.memberPubkey, payload);
+    if (accepted.length > 0) {
+      await markControlSent(outboxId);
+      delivered = true;
+    }
+  } catch {
+    // Kept in the outbox for the next successful sync.
+  }
+
+  return { delivered };
 }

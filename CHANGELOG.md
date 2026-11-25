@@ -4,6 +4,18 @@
 
 ### Added
 
+- Seamless circle restore: accepting, declining or being removed publishes a
+  private `circle-membership` receipt to the identity's own inbox. Restoring an
+  identity on a new phone or after a reinstall re-applies the newest receipts,
+  so previously joined circles come back without tapping Accept again. Existing
+  memberships are backfilled on the first sync after upgrading.
+- The inbox syncs once in the background when the tabs open, so an imported
+  identity restores its circles immediately.
+- Owner removal now travels to the removed member as a private control message,
+  retried from `control_outbox`, so a stale join receipt cannot resurrect the
+  circle after a restore.
+- Pending invitations are scoped to the recipient identity, so multiple
+  identities on one device no longer see each other's invitations.
 - Private display names: the owner's name travels with invitations, the
   invitee's name with acceptance, and every post carries its author's name.
   Names are cached in `contact_profiles` (schema v4) and shown in circles, the
@@ -20,6 +32,8 @@
   Circles tab, and accepting adds the circle locally and notifies the owner.
   Members are recorded as `invited` until acceptance; post keys are delivered to
   invited members too, so a lost acceptance cannot lock them out.
+- An invitation for a circle the identity already belongs to refreshes the
+  local name and roster instead of asking the member to accept again.
 - Invitations are only trusted when the claimed owner signed them and the
   recipient is in the roster.
 - The previous "add member" flow only changed the owner's local database; it
