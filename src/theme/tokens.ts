@@ -115,10 +115,10 @@ export const fontFamily = {
   serifItalic: 'CormorantGaramond_400Regular_Italic',
   serifMedium: 'CormorantGaramond_500Medium',
   serifSemiBold: 'CormorantGaramond_600SemiBold',
-  sans: 'Manrope_400Regular',
-  sansMedium: 'Manrope_500Medium',
-  sansSemiBold: 'Manrope_600SemiBold',
-  sansBold: 'Manrope_700Bold',
+  sans: 'InstrumentSans_400Regular',
+  sansMedium: 'InstrumentSans_500Medium',
+  sansSemiBold: 'InstrumentSans_600SemiBold',
+  sansBold: 'InstrumentSans_700Bold',
 } as const;
 
 export const typeScale = {

@@ -84,7 +84,7 @@ Local Android builds on Windows must live at a short path; see
 ## Design
 
 Cinematic editorial: Cormorant Garamond for the wordmark and editorial titles;
-Manrope for functional UI. Large media covers, strong scale contrast and quiet
+Instrument Sans for functional UI. Large media covers, strong scale contrast and quiet
 metadata replace generic feed rows. Updates is a finite unread inbox; Archive is
 the identity's own published history, while received moments live in Updates and
 each circle feed. Four tabs (Updates, Circles, Archive, Profile) surround a
@@ -103,4 +103,4 @@ alternatives. All visual and motion tokens live in `src/theme/tokens.ts`.
 ## Licence
 
 Code is unlicensed pending a decision. Bundled fonts: Cormorant Garamond and
-Manrope under the SIL Open Font License 1.1.
+Instrument Sans under the SIL Open Font License 1.1.

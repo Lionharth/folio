@@ -42,6 +42,8 @@
 
 ### Changed
 
+- Replaced Manrope with Instrument Sans for functional UI text, keeping Cormorant
+  Garamond for the wordmark and editorial titles.
 - Per-circle mute is now a full mute: it suppresses moment, invitation,
   membership and social alerts for that circle and hides its Inbox activity while
   muted. The circle's content remains visible in Updates and Circles.
@@ -228,7 +230,7 @@
 - Design system: colour/typography/spacing/radius tokens, light and dark
   palettes, `AppText`, `Button`, `TextField`, `Card`, `Screen`, `Avatar`,
   `ListRow`, `PageHeader`, empty/loading/error states.
-- Bundled Cormorant Garamond and Manrope families (no runtime font download).
+- Bundled Cormorant Garamond and Instrument Sans families (no runtime font download).
 - Five-tab shell: Updates, Circles, Create, Archive, Profile.
 - Onboarding: create identity, reveal/copy recovery key, import `nsec`.
 - Identities and media keys in `expo-secure-store`; no secrets in SQLite.

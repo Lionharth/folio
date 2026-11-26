@@ -22,11 +22,11 @@ import {
   CormorantGaramond_600SemiBold,
 } from '@expo-google-fonts/cormorant-garamond';
 import {
-  Manrope_400Regular,
-  Manrope_500Medium,
-  Manrope_600SemiBold,
-  Manrope_700Bold,
-} from '@expo-google-fonts/manrope';
+  InstrumentSans_400Regular,
+  InstrumentSans_500Medium,
+  InstrumentSans_600SemiBold,
+  InstrumentSans_700Bold,
+} from '@expo-google-fonts/instrument-sans';
 import { useFonts } from 'expo-font';
 
 import { useNotificationRouting } from '../hooks/useNotificationRouting';
@@ -82,10 +82,10 @@ export default function RootLayout() {
     CormorantGaramond_400Regular_Italic,
     CormorantGaramond_500Medium,
     CormorantGaramond_600SemiBold,
-    Manrope_400Regular,
-    Manrope_500Medium,
-    Manrope_600SemiBold,
-    Manrope_700Bold,
+    InstrumentSans_400Regular,
+    InstrumentSans_500Medium,
+    InstrumentSans_600SemiBold,
+    InstrumentSans_700Bold,
   });
 
   useEffect(() => {
