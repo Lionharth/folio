@@ -72,7 +72,7 @@ jobs:
           SDKMANAGER=$(find "$SDK" -path "*/cmdline-tools/*/bin/sdkmanager" -type f | sort | tail -n 1)
           test -n "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-37" "build-tools;37.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+          "$SDKMANAGER" "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
 
       - uses: gradle/actions/setup-gradle@v4
 
