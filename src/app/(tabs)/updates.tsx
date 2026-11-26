@@ -184,7 +184,7 @@ export default function UpdatesScreen() {
           >
             <Feather name="check" size={22} color={theme.colors.textSecondary} />
           </View>
-          <AppText variant="headline">{circleFilter ? 'Nothing new here' : 'You’re caught up'}</AppText>
+          <AppText variant="headline">{circleFilter ? 'Nothing new here' : "You're caught up"}</AppText>
           <Button label="Open Archive" variant="secondary" style={{ alignSelf: 'center' }} onPress={() => router.push('/(tabs)/archive')} />
         </View>
       );
