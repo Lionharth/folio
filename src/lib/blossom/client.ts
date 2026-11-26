@@ -1,6 +1,7 @@
-import { Directory, File, Paths, UploadType } from 'expo-file-system';
+import { Directory, File, Paths, UploadType, type UploadResult as FileUploadResult } from 'expo-file-system';
 
 import { buildBlossomAuthHeader } from './auth';
+import { classifyBlossomError, describeBlossomError, extractBlossomDetail, type BlossomFailureKind } from './errors';
 
 export interface MediaProviderInfo {
   /** Stable id, normally the origin. */
@@ -40,9 +41,17 @@ export interface UploadResult {
   verified: boolean;
 }
 
+export interface ProbeResult {
+  ok: boolean;
+  status?: number;
+  latencyMs: number;
+  kind?: BlossomFailureKind;
+  detail?: string;
+}
+
 export type PreflightResult =
-  | { supported: false; reason: string }
-  | { supported: true; status: number; reason?: string };
+  | { supported: true; status: number; reason?: string }
+  | { supported: false; kind: 'unsupported' | 'unreachable'; reason: string; failure?: BlossomFailureKind };
 
 function normalizeServerUrl(url: string): string {
   const trimmed = url.trim().replace(/\/+$/, '');
@@ -57,7 +66,9 @@ export class BlossomError extends Error {
   constructor(
     message: string,
     readonly status?: number,
-    readonly reason?: string
+    readonly reason?: string,
+    readonly kind?: BlossomFailureKind,
+    readonly detail?: string
   ) {
     super(message);
     this.name = 'BlossomError';
@@ -72,6 +83,20 @@ async function readReason(response: Response): Promise<string | undefined> {
     return text.slice(0, 200) || undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * RN's shared OkHttp client has no default timeouts, so every bounded request
+ * needs its own abort signal.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -90,6 +115,25 @@ export class BlossomClient {
 
   info(): MediaProviderInfo {
     return { id: this.id, name: this.name, url: this.url, uploadEnabled: true };
+  }
+
+  /**
+   * Cheap reachability probe. Uses a short timeout and never throws so the
+   * publish pipeline can decide whether to fall back to another provider.
+   */
+  async probe(timeoutMs = 4000): Promise<ProbeResult> {
+    const started = Date.now();
+    try {
+      const response = await fetchWithTimeout(`${this.url}/`, { method: 'HEAD' }, timeoutMs);
+      return { ok: response.status < 500, status: response.status, latencyMs: Date.now() - started };
+    } catch (error) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - started,
+        kind: classifyBlossomError(error),
+        detail: extractBlossomDetail(error),
+      };
+    }
   }
 
   /** OPTIONS /upload feature discovery (BUD-01). */
@@ -113,24 +157,34 @@ export class BlossomClient {
     secretKey: Uint8Array,
     size: number,
     sha256: string,
-    mimeType = 'application/octet-stream'
+    mimeType = 'application/octet-stream',
+    timeoutMs = 8000
   ): Promise<PreflightResult> {
     let response: Response;
     try {
-      response = await fetch(`${this.url}/upload`, {
-        method: 'HEAD',
-        headers: {
-          Authorization: buildBlossomAuthHeader(secretKey, { verb: 'upload', server: this.url, sha256, content: 'Upload Blob' }),
-          'X-SHA-256': sha256,
-          'X-Content-Length': String(size),
-          'X-Content-Type': mimeType,
+      response = await fetchWithTimeout(
+        `${this.url}/upload`,
+        {
+          method: 'HEAD',
+          headers: {
+            Authorization: buildBlossomAuthHeader(secretKey, { verb: 'upload', server: this.url, sha256, content: 'Upload Blob' }),
+            'X-SHA-256': sha256,
+            'X-Content-Length': String(size),
+            'X-Content-Type': mimeType,
+          },
         },
-      });
+        timeoutMs
+      );
     } catch (error) {
-      return { supported: false, reason: error instanceof Error ? error.message : 'Network error' };
+      return {
+        supported: false,
+        kind: 'unreachable',
+        reason: describeBlossomError(error, this.name),
+        failure: classifyBlossomError(error),
+      };
     }
     if (response.status === 405 || response.status === 501) {
-      return { supported: false, reason: 'Server does not advertise upload preflight' };
+      return { supported: false, kind: 'unsupported', reason: 'Server does not advertise upload preflight' };
     }
     if (response.ok) return { supported: true, status: response.status };
     const reason = (await readReason(response)) ?? `Rejected with HTTP ${response.status}`;
@@ -153,19 +207,31 @@ export class BlossomClient {
       lifetimeSeconds: 900,
     });
 
-    const result = await file.upload(`${this.url}/upload`, {
-      httpMethod: 'PUT',
-      uploadType: UploadType.BINARY_CONTENT,
-      headers: {
-        Authorization: authorization,
-        'Content-Type': options.mimeType ?? 'application/octet-stream',
-        'X-SHA-256': options.sha256,
-        'Content-Length': String(options.size),
-      },
-      mimeType: options.mimeType ?? 'application/octet-stream',
-      onProgress: options.onProgress,
-      signal: options.signal,
-    });
+    let result: FileUploadResult;
+    try {
+      result = await file.upload(`${this.url}/upload`, {
+        httpMethod: 'PUT',
+        uploadType: UploadType.BINARY_CONTENT,
+        headers: {
+          Authorization: authorization,
+          'Content-Type': options.mimeType ?? 'application/octet-stream',
+          'X-SHA-256': options.sha256,
+          'Content-Length': String(options.size),
+        },
+        mimeType: options.mimeType ?? 'application/octet-stream',
+        onProgress: options.onProgress,
+        signal: options.signal,
+      });
+    } catch (error) {
+      const kind = classifyBlossomError(error);
+      throw new BlossomError(
+        describeBlossomError(error, this.name),
+        undefined,
+        undefined,
+        kind,
+        extractBlossomDetail(error)
+      );
+    }
 
     if (result.status !== 200 && result.status !== 201) {
       let reason: string | undefined;
@@ -199,11 +265,11 @@ export class BlossomClient {
   }
 
   /** HEAD /<sha256> (BUD-01) to confirm the blob exists with the expected length. */
-  async verifyBlob(url: string, expectedSize?: number): Promise<boolean> {
+  async verifyBlob(url: string, expectedSize?: number, timeoutMs = 5000): Promise<boolean> {
     const target = new URL(url);
     if (target.protocol !== 'https:' && target.protocol !== 'http:') return false;
     try {
-      const response = await fetch(url, { method: 'HEAD' });
+      const response = await fetchWithTimeout(url, { method: 'HEAD' }, timeoutMs);
       if (!response.ok) return false;
       const length = Number(response.headers.get('content-length'));
       if (expectedSize !== undefined && Number.isFinite(length) && length !== expectedSize) return false;
@@ -243,16 +309,6 @@ export class BlossomClient {
       throw new BlossomError('Downloaded blob failed hash verification');
     }
     return file;
-  }
-
-  async health(): Promise<{ ok: boolean; latencyMs?: number }> {
-    const started = Date.now();
-    try {
-      const response = await fetch(`${this.url}/`, { method: 'HEAD' });
-      return { ok: response.status < 500, latencyMs: Date.now() - started };
-    } catch {
-      return { ok: false };
-    }
   }
 }
 

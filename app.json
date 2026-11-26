@@ -2,7 +2,7 @@
   "expo": {
     "name": "Folio",
     "slug": "folio",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "folio",
@@ -20,6 +20,7 @@
     },
     "android": {
       "package": "life.folio.app",
+      "versionCode": 2,
       "adaptiveIcon": {
         "backgroundColor": "#171717",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -78,6 +79,15 @@
         "expo-image-picker",
         {
           "photosPermission": "Folio lets you import videos from your library into private circles."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "extraProguardRules": "\n# Room creates generated database implementations by reflection.\n# WorkManager instantiates WorkDatabase_Impl this way during startup, so R8\n# must keep the no-argument constructor in minified release builds.\n-keep class * extends androidx.room.RoomDatabase {\n    <init>();\n}\n"
+          }
         }
       ]
     ],

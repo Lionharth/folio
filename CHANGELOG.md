@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.1
+
+### Added
+
+- Publishing falls back across storage providers. The selected Blossom server is
+  tried first, then the remaining presets; transport/TLS failures, HTTP 5xx and
+  a failed blob verification move to the next candidate, while a 4xx policy
+  rejection is shown with the provider's own reason. Network requests are
+  time-bounded.
+
+### Fixed
+
+- A storage provider with an untrusted or expired certificate no longer surfaces
+  the raw `FileSystemUploadTask.start` rejected-promise text. The publish flow
+  detects the TLS failure, skips that provider, and reports an actionable
+  message if no provider can be trusted.
+- Android release builds no longer crash on launch. R8 was stripping the
+  reflective Room constructor used by WorkManager, so minified releases now
+  keep `RoomDatabase` constructors through `expo-build-properties`.
+
 ## Unreleased
 
 ### Changed

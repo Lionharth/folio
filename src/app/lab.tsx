@@ -100,14 +100,15 @@ async function computeProviderResults(): Promise<CheckResult[]> {
       const label = `${preset.name} (${preset.url})`;
       try {
         const client = new BlossomClient(preset.url);
-        const health = await withTimeout(client.health(), `${preset.name} health`, 8_000);
+        const probe = await withTimeout(client.probe(), `${preset.name} probe`, 8_000);
         const discovery = await withTimeout(client.discover(), `${preset.name} discovery`, 8_000);
+        const reason = probe.detail ? probe.detail.slice(0, 80) : undefined;
         return {
           label,
-          ok: health.ok,
-          detail: health.ok
-            ? `UP · ${health.latencyMs ?? '?'} ms · PUT ${discovery.put ? 'yes' : 'no'} · HEAD ${discovery.head ? 'yes' : 'no'}`
-            : 'Unreachable',
+          ok: probe.ok,
+          detail: probe.ok
+            ? `UP · ${probe.latencyMs} ms · PUT ${discovery.put ? 'yes' : 'no'} · HEAD ${discovery.head ? 'yes' : 'no'}`
+            : `${probe.kind ?? 'unreachable'}${probe.status ? ` ${probe.status}` : ''}${reason ? ` · ${reason}` : ''}`,
         };
       } catch (error) {
         return { label, ok: false, detail: error instanceof Error ? error.message : 'Unreachable' };

@@ -357,6 +357,7 @@ export default function CreateScreen() {
         {progress ? (
           <View accessibilityLiveRegion="polite" style={{ gap: theme.spacing.sm }}>
             <AppText variant="bodyStrong">{STAGE_LABELS[progress.stage]}</AppText>
+            {progress.detail ? <AppText variant="caption" color="textSecondary">{progress.detail}</AppText> : null}
             <ProgressBar fraction={progress.fraction} label={STAGE_LABELS[progress.stage]} />
             <AppText variant="caption" color="textSecondary">Keep Folio open.</AppText>
           </View>

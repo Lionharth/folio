@@ -32,9 +32,8 @@ npx expo run:android    # dev build + install
 npx expo prebuild --clean --platform android
 npx expo-doctor
 
-# release APK with embedded JS (no Metro needed), from C:\folio
-gradlew -p C:\folio\android app:assembleRelease -x lint -x test \
-  -PreactNativeArchitectures=x86_64 -Pandroid.enableMinifyInReleaseBuilds=false
+# release APK with embedded JS and R8 minification, from C:\folio
+gradlew -p C:\folio\android app:assembleRelease -x lint -x test -PreactNativeArchitectures=arm64-v8a
 ```
 
 Always use `npx expo install <pkg>` for native packages so versions match SDK 58.

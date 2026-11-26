@@ -1,7 +1,10 @@
 import { File, FileMode } from 'expo-file-system';
 import { randomUUID } from 'expo-crypto';
 
-import { BlossomClient } from '../lib/blossom/client';
+import { PROVIDER_PRESETS } from '../constants/providers';
+import { BlossomClient, BlossomError, type UploadOptions, type UploadResult } from '../lib/blossom/client';
+import { NO_TRUSTED_PROVIDER, STORAGE_UNREACHABLE, classifyBlossomError, type BlossomFailureKind } from '../lib/blossom/errors';
+import { buildProviderCandidates } from '../lib/blossom/selection';
 import { base64ToBytes, bytesToBase64 } from '../lib/crypto/bytes';
 import { generateMediaKey } from '../lib/crypto/expoAes';
 import { encryptMediaFile } from '../lib/crypto/mediaFiles';
@@ -59,6 +62,7 @@ export interface PublishVlogResult {
   clipId: string;
   rumorId: string;
   url: string;
+  provider: string;
   coverUri: string | null;
   encryptedSha256: string;
   encryptedSize: number;
@@ -88,11 +92,133 @@ async function copyIntoPrivateStore(sourceUri: string, destination: File): Promi
   }
 }
 
+interface ProviderUploadInput {
+  sha256: string;
+  size: number;
+  mimeType?: string;
+  secretKey: Uint8Array;
+}
+
 /**
- * Full publish pipeline: private copy -> SHA-256 -> encrypt -> preflight ->
- * upload -> verify -> gift-wrap the media key to every active member -> persist.
- * Media is encrypted before any network operation and plaintext is never
- * uploaded.
+ * Tries the selected provider first, then the remaining presets. Transport,
+ * TLS, 5xx and verification failures fall through to the next candidate; a 4xx
+ * is a policy answer and is surfaced immediately.
+ */
+async function uploadWithFallback(
+  candidates: string[],
+  file: File,
+  input: ProviderUploadInput,
+  report: (progress: PublishProgress) => void
+): Promise<{ client: BlossomClient; upload: UploadResult }> {
+  const failures: string[] = [];
+  let sawTlsFailure = false;
+  let lastKind: BlossomFailureKind = 'unknown';
+
+  for (const url of candidates) {
+    const client = new BlossomClient(url);
+    const detail = candidates.length > 1 ? client.name : undefined;
+    report({ stage: 'checking-provider', detail });
+
+    const probe = await client.probe();
+    if (!probe.ok) {
+      const kind = probe.kind ?? (probe.status !== undefined && probe.status >= 500 ? 'server' : 'unreachable');
+      lastKind = kind === 'unreachable' ? lastKind : kind;
+      if (kind === 'tls') sawTlsFailure = true;
+      failures.push(`${client.name}: ${kind}`);
+      continue;
+    }
+
+    const preflight = await client.preflight(input.secretKey, input.size, input.sha256, input.mimeType);
+    if (!preflight.supported) {
+      if (preflight.kind === 'unreachable') {
+        lastKind = preflight.failure ?? lastKind;
+        if (preflight.failure === 'tls') sawTlsFailure = true;
+        failures.push(`${client.name}: ${preflight.failure ?? 'unreachable'}`);
+        continue;
+      }
+    } else if (preflight.status >= 500) {
+      lastKind = 'server';
+      failures.push(`${client.name}: HTTP ${preflight.status}`);
+      continue;
+    } else if (preflight.status >= 400) {
+      throw new BlossomError(
+        preflight.reason ?? `This provider rejected the upload (HTTP ${preflight.status})`,
+        preflight.status,
+        preflight.reason
+      );
+    }
+
+    report({ stage: 'uploading', fraction: 0, detail });
+    const options: UploadOptions = {
+      sha256: input.sha256,
+      size: input.size,
+      mimeType: input.mimeType,
+      secretKey: input.secretKey,
+      onProgress: ({ bytesSent, totalBytes }) =>
+        report({
+          stage: 'uploading',
+          fraction: totalBytes > 0 ? bytesSent / totalBytes : 0,
+          detail,
+        }),
+    };
+
+    try {
+      const upload = await client.uploadFile(file, options);
+      if (!upload.verified) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        if (!(await client.verifyBlob(upload.descriptor.url, input.size))) {
+          lastKind = 'server';
+          failures.push(`${client.name}: verification`);
+          continue;
+        }
+        return { client, upload: { ...upload, verified: true } };
+      }
+      return { client, upload };
+    } catch (error) {
+      if (error instanceof BlossomError) {
+        if (error.status !== undefined && error.status >= 500) {
+          lastKind = 'server';
+          failures.push(`${client.name}: HTTP ${error.status}`);
+          continue;
+        }
+        if (error.status !== undefined) {
+          throw new BlossomError(
+            error.reason ? `${error.message}: ${error.reason}` : error.message,
+            error.status,
+            error.reason,
+            error.kind,
+            error.detail
+          );
+        }
+        if (error.kind === 'tls' || error.kind === 'transport') {
+          lastKind = error.kind;
+          if (error.kind === 'tls') sawTlsFailure = true;
+          failures.push(`${client.name}: ${error.kind}`);
+          continue;
+        }
+        throw error;
+      }
+      const kind = classifyBlossomError(error);
+      if (kind !== 'tls' && kind !== 'transport') throw error;
+      lastKind = kind;
+      if (kind === 'tls') sawTlsFailure = true;
+      failures.push(`${client.name}: ${kind}`);
+    }
+  }
+
+  throw new BlossomError(
+    sawTlsFailure ? NO_TRUSTED_PROVIDER : STORAGE_UNREACHABLE,
+    undefined,
+    failures.join('; '),
+    sawTlsFailure ? 'tls' : lastKind
+  );
+}
+
+/**
+ * Full publish pipeline: private copy -> SHA-256 -> encrypt -> provider
+ * selection (selected, then presets) -> upload -> verify -> gift-wrap the media
+ * key to every active member -> persist. Media is encrypted before any network
+ * operation and plaintext is never uploaded.
  */
 export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogResult> {
   const remoteVlogId = randomUUID();
@@ -140,28 +266,16 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       onProgress: (processed, total) => report({ stage: 'encrypting', fraction: total > 0 ? processed / total : 1 }),
     });
 
-    const provider = new BlossomClient(input.providerUrl);
-    report({ stage: 'checking-provider' });
-    const preflight = await provider.preflight(input.secretKey, encrypted.encryptedSize, encrypted.sha256);
-    if (preflight.supported && preflight.status >= 400) {
-      throw new Error(preflight.reason ?? `This provider rejected the upload (HTTP ${preflight.status})`);
-    }
-
-    report({ stage: 'uploading', fraction: 0 });
-    const upload = await provider.uploadFile(encryptedFile, {
+    const providerCandidates = buildProviderCandidates(input.providerUrl, PROVIDER_PRESETS.map((preset) => preset.url));
+    const { client: provider, upload } = await uploadWithFallback(providerCandidates, encryptedFile, {
       sha256: encrypted.sha256,
       size: encrypted.encryptedSize,
       mimeType: 'application/octet-stream',
       secretKey: input.secretKey,
-      onProgress: ({ bytesSent, totalBytes }) =>
-        report({ stage: 'uploading', fraction: totalBytes > 0 ? bytesSent / totalBytes : 0 }),
-    });
+    }, report);
     uploadedUrl = upload.descriptor.url;
 
     report({ stage: 'verifying' });
-    if (!upload.verified) {
-      throw new Error('The uploaded file could not be verified on the storage provider');
-    }
 
     let thumbnail: VlogThumbnailPayload | undefined;
     if (coverFile && prepared.thumbnail) {
@@ -297,6 +411,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       clipId,
       rumorId,
       url: uploadedUrl,
+      provider: provider.id,
       coverUri: coverFile?.uri ?? null,
       encryptedSha256: encrypted.sha256,
       encryptedSize: encrypted.encryptedSize,

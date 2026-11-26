@@ -111,14 +111,18 @@ Design choices:
 2. SHA-256 the plaintext with the native file digest.
 3. Generate a 32-byte media key from the platform CSPRNG.
 4. Encrypt into FOLIO-FC1 in the cache directory.
-5. Hash the ciphertext, run a BUD-06 preflight (size/type policy).
-6. `PUT /upload` (BUD-02) with a BUD-11 `kind: 24242` authorization token.
-7. Verify the returned descriptor and `HEAD` the blob.
-8. Persist the media key in SecureStore **before** distribution.
-9. Build a NIP-17 `kind: 15` rumor carrying the file URL, ciphertext hash, and a
+5. Hash the ciphertext, then select a storage provider: the user's selection is
+   tried first and the remaining presets follow. Each candidate gets a short
+   `HEAD /` probe, a BUD-06 preflight (size/type policy) and a `PUT /upload`
+   (BUD-02) with a BUD-11 token built for that origin. Transport/TLS failures,
+   HTTP 5xx and a failed blob verification fall through to the next candidate;
+   a 4xx is a policy answer and is surfaced without retrying elsewhere.
+6. Verify the returned descriptor and `HEAD` the blob.
+7. Persist the media key in SecureStore **before** distribution.
+8. Build a NIP-17 `kind: 15` rumor carrying the file URL, ciphertext hash, and a
    `folio-key` payload; seal and gift-wrap it for each active member **and the
    sender**; publish each wrap to the recipient's kind-10050 inbox relays.
-10. Write the vlog and clip to SQLite; delete the encrypted cache file.
+9. Write the vlog and clip to SQLite; delete the encrypted cache file.
 
 The vlog never becomes visible to a recipient before its media blob exists and
 has been hashed by the uploader.

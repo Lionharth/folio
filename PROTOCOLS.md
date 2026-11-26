@@ -383,6 +383,12 @@ Preflight (`HEAD /upload`) sends `X-SHA-256`, `X-Content-Length`,
 `X-Content-Type`; a `402`/`413` is shown to the user as the provider's own
 `X-Reason`.
 
+Provider selection: the chosen server is tried first, then the remaining presets
+in `src/constants/providers.ts`. Uploads fall back on transport/TLS failures,
+HTTP `5xx` and a failed blob verification. Each candidate gets its own BUD-11
+token because the `server` tag is origin-bound. An HTTP `4xx` is returned to the
+user and is not retried against a different provider.
+
 ## Relay policy
 
 Bootstrap relays are in `src/lib/nostr/relays.ts`. They are ordinary public

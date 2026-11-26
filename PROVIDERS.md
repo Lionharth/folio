@@ -84,6 +84,28 @@ nostr.download, Yakihonne, Ditto or data.haus. psbt.me requires payment above
 - Folio should mirror ciphertext when it can: the `clips.mirrors` column exists,
   but automatic mirroring is not implemented.
 
+## TLS trust (Android)
+
+Android validates the certificate chain exactly as the server sends it and does
+not fetch missing intermediates. A Windows or browser probe can therefore pass
+via AIA while the Android client fails with
+`CertPathValidatorException: Trust anchor for certification path not found`.
+That is a provider-side chain problem, not an upload bug.
+
+As of 2026-11-26 the newest `nostr.download` leaf in CT logs (issuer Let's
+Encrypt `CN=YR2`) expired 2026-11-23, no newer issuance was indexed, and the
+host did not answer an IPv6 TLS check. The measurements above predate that, and
+the app now falls back to another preset when it happens. Verify a preset from
+Android before trusting it:
+
+```bash
+openssl s_client -connect nostr.download:443 -servername nostr.download -showcerts
+```
+
+Check the leaf `notAfter` and confirm the issuing intermediate is included in the
+output. Provider probes should be re-run from an Android device or emulator, not
+only from a Windows host.
+
 ## Reproducing
 
 ```bash
