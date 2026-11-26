@@ -22,6 +22,8 @@
 
 ## Unreleased
 
+## 0.1.2
+
 ### Added
 
 - A dedicated Inbox for replies, comments on your moments, reactions to your
