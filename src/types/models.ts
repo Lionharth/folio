@@ -33,6 +33,8 @@ export interface ClipThumbnail {
   mimeType: string;
   width?: number | null;
   height?: number | null;
+  /** Extra verified copies of the same encrypted cover. */
+  mirrors?: string[] | null;
 }
 
 export interface Clip {

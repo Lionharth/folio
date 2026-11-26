@@ -206,6 +206,7 @@ function toVlog(message: InboxMessage, viewerPubkey: string): { vlog: Vlog; clip
           mimeType: payload.thumbnail.mimeType,
           width: payload.thumbnail.width,
           height: payload.thumbnail.height,
+          mirrors: payload.thumbnail.mirrors ?? null,
         }
       : null,
     state: 'remote',

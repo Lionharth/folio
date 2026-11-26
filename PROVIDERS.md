@@ -81,8 +81,10 @@ nostr.download, Yakihonne, Ditto or data.haus. psbt.me requires payment above
 - `Sunset` headers were not observed on downloads. Absence is not a guarantee.
 - Uploads are not resumable with BUD-02; a dropped upload restarts. The app
   retries at the job level in a future milestone.
-- Folio should mirror ciphertext when it can: the `clips.mirrors` column exists,
-  but automatic mirroring is not implemented.
+- Folio stores a backup copy by default: after the primary verifies, the same
+  ciphertext is uploaded to one other preset. The copy is best-effort, encrypted
+  with the same key, and listed in the key payload so recipients can fall back.
+  It can be turned off per device in Create → Advanced.
 
 ## TLS trust (Android)
 

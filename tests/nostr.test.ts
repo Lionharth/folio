@@ -6,6 +6,7 @@ import { createRumor, createSeal, createWrap, unwrapEvent } from 'nostr-tools/ni
 import {
   FOLIO_FORMAT_FC1,
   parseKeyPayload,
+  sanitizeMirrorUrls,
   wrapKeyMessage,
   type VlogKeyPayload,
 } from '../src/lib/nostr/dm';
@@ -198,4 +199,84 @@ test('a malformed thumbnail is dropped without losing the video', () => {
   ]);
   assert.ok(badKey);
   assert.equal(badKey.thumbnail, undefined);
+});
+
+test('mirror URLs are sanitized before they reach playback', () => {
+  assert.deepEqual(sanitizeMirrorUrls(null), []);
+  assert.deepEqual(sanitizeMirrorUrls('https://blossom.example/abc'), []);
+  assert.deepEqual(
+    sanitizeMirrorUrls([
+      'https://nostr.download/abc',
+      'https://nostr.download/def',
+      'javascript:alert(1)',
+      'not a url',
+      42,
+      ' https://blossom.ditto.pub/xyz/// ',
+    ]),
+    ['https://nostr.download/abc', 'https://blossom.ditto.pub/xyz']
+  );
+
+  const capped = sanitizeMirrorUrls(
+    ['https://a.example/1', 'https://b.example/2', 'https://c.example/3', 'https://d.example/4', 'https://e.example/5'],
+    2
+  );
+  assert.deepEqual(capped, ['https://a.example/1', 'https://b.example/2']);
+});
+
+test('mirror URLs must be public https blobs', () => {
+  assert.deepEqual(
+    sanitizeMirrorUrls([
+      'http://nostr.download/abc',
+      'https://127.0.0.1/abc',
+      'https://10.1.2.3/abc',
+      'https://172.16.0.9/abc',
+      'https://192.168.1.2/abc',
+      'https://169.254.169.254/latest/meta-data',
+      'https://[::1]/abc',
+      'https://[fd00::1]/abc',
+      'https://localhost/abc',
+      'https://printer.local/abc',
+      'https://user:pass@nostr.download/abc',
+      'https://nostr.download/ok',
+      'https://8.8.8.8/blob',
+    ]),
+    ['https://nostr.download/ok', 'https://8.8.8.8/blob']
+  );
+});
+
+test('payload parsing keeps valid mirrors and drops malformed ones', () => {
+  const payload = makePayload({
+    mirrors: ['https://nostr.download/abc', 'javascript:alert(1)'],
+  });
+  const parsed = parseKeyPayload([['folio-key', JSON.stringify(payload)]]);
+  assert.ok(parsed);
+  assert.deepEqual(parsed.mirrors, ['https://nostr.download/abc']);
+
+  const notAnArray = parseKeyPayload([
+    ['folio-key', JSON.stringify({ ...makePayload(), mirrors: 'https://nostr.download/abc' })],
+  ]);
+  assert.ok(notAnArray);
+  assert.equal(notAnArray.mirrors, undefined);
+
+  const nullPayload = parseKeyPayload([['folio-key', 'null']]);
+  assert.equal(nullPayload, null);
+});
+
+test('thumbnail mirrors survive parsing and bad ones are dropped', () => {
+  const payload = makePayload({
+    thumbnail: {
+      url: 'https://blossom.example/thumb.jpg',
+      keyB64: bytesToBase64(new Uint8Array(32).fill(7)),
+      sha256: 'c'.repeat(64),
+      size: 4096,
+      mimeType: 'image/jpeg',
+      width: 720,
+      height: 405,
+      mirrors: ['https://nostr.download/thumb', 'ftp://bad.example/thumb'],
+    },
+  });
+
+  const parsed = parseKeyPayload([['folio-key', JSON.stringify(payload)]]);
+  assert.ok(parsed?.thumbnail);
+  assert.deepEqual(parsed.thumbnail.mirrors, ['https://nostr.download/thumb']);
 });

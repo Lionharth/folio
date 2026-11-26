@@ -95,9 +95,15 @@ nonce, which conflicts with chunked encryption, so Folio omits
   "width": 1080,
   "height": 1920,
   "createdAt": 1700000000,
-  "mirrors": ["optional urls"]
+  "mirrors": ["https://backup.example/<sha256>.bin"]
 }
 ```
+
+`mirrors` lists verified extra copies of the same ciphertext. It is optional and
+bounded: receivers keep at most four unique public `https` origins, reject
+loopback/LAN/link-local hosts, and drop anything else. `thumbnail` may carry its
+own `mirrors` array for the encrypted cover. The primary URL remains the rumor
+`content`.
 
 Compatibility: a generic NIP-17 client can see a file message, but cannot
 decrypt FC1 because the key decrypts chunks, not the whole container. Folio does
@@ -400,6 +406,12 @@ in `src/constants/providers.ts`. Uploads fall back on transport/TLS failures,
 HTTP `5xx` and a failed blob verification. Each candidate gets its own BUD-11
 token because the `server` tag is origin-bound. An HTTP `4xx` is returned to the
 user and is not retried against a different provider.
+
+Mirroring: after the primary copy verifies, one backup provider is tried with
+the identical ciphertext (and the encrypted cover), excluding the provider that
+actually stored the primary copy. Mirror failures are ignored, and only verified
+copies are included in `mirrors`. Publish → Advanced exposes an on/off toggle,
+persisted as `media.mirrorCopies`, and the backup copy is on by default.
 
 ## Relay policy
 

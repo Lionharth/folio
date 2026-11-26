@@ -126,11 +126,19 @@ Design choices:
    HTTP 5xx and a failed blob verification fall through to the next candidate;
    a 4xx is a policy answer and is surfaced without retrying elsewhere.
 6. Verify the returned descriptor and `HEAD` the blob.
-7. Persist the media key in SecureStore **before** distribution.
-8. Build a NIP-17 `kind: 15` rumor carrying the file URL, ciphertext hash, and a
-   `folio-key` payload; seal and gift-wrap it for each active member **and the
-   sender**; publish each wrap to the recipient's kind-10050 inbox relays.
-9. Write the vlog and clip to SQLite; delete the encrypted cache file.
+7. Unless disabled in Create → Advanced, upload the same ciphertext to one
+   backup provider (the next preset whose origin differs from the provider that
+   actually stored the primary copy). The encrypted cover is backed up to the
+   same provider. Mirrors are best-effort: transport, TLS, policy and
+   verification failures are ignored, and only verified copies are recorded.
+8. Persist the media key in SecureStore **before** distribution.
+9. Build a NIP-17 `kind: 15` rumor carrying the file URL, ciphertext hash, the
+   `mirrors` list, and a `folio-key` payload; seal and gift-wrap it for each
+   active member **and the sender**; publish each wrap to the recipient's
+   kind-10050 inbox relays. Mirrors are uploaded before this step because
+   recipients only learn download locations from the payload.
+10. Write the vlog and clip (including `clips.mirrors`) to SQLite; delete the
+    encrypted cache file.
 
 The vlog never becomes visible to a recipient before its media blob exists and
 has been hashed by the uploader.

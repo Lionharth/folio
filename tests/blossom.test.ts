@@ -7,7 +7,7 @@ import {
   describeBlossomError,
   extractBlossomDetail,
 } from '../src/lib/blossom/errors';
-import { buildProviderCandidates } from '../src/lib/blossom/selection';
+import { buildMirrorCandidates, buildProviderCandidates } from '../src/lib/blossom/selection';
 
 const ANDROID_TLS =
   "Call to function 'FileSystemUploadTask.start' has been rejected. " +
@@ -36,6 +36,44 @@ test('provider candidates dedupe trailing slashes and keep an unknown selection'
     'https://nostr.download',
   ]);
   assert.deepEqual(candidates, ['https://cdn.example.test', 'https://nostr.download']);
+});
+
+test('mirror candidates exclude the provider that stored the primary copy', () => {
+  const presets = [
+    'https://nostr.download',
+    'https://blossom.yakihonne.com',
+    'https://blossom.ditto.pub',
+  ];
+  assert.deepEqual(
+    buildMirrorCandidates('https://blossom.ditto.pub', 'https://blossom.ditto.pub', presets, 1),
+    ['https://nostr.download']
+  );
+  assert.deepEqual(
+    buildMirrorCandidates('https://blossom.ditto.pub', 'https://blossom.ditto.pub', presets, 2),
+    ['https://nostr.download', 'https://blossom.yakihonne.com']
+  );
+});
+
+test('mirror candidates follow preset order after a fallback and dedupe by origin', () => {
+  const presets = [
+    'https://nostr.download/',
+    'https://blossom.yakihonne.com',
+    'https://blossom.yakihonne.com/',
+    'https://blossom.data.haus',
+  ];
+  assert.deepEqual(
+    buildMirrorCandidates('https://blossom.yakihonne.com', 'https://blossom.data.haus', presets, 3),
+    ['https://blossom.data.haus', 'https://nostr.download']
+  );
+});
+
+test('mirror candidates handle zero or unusable primaries', () => {
+  const presets = ['https://nostr.download', 'https://blossom.ditto.pub'];
+  assert.deepEqual(buildMirrorCandidates('https://nostr.download', 'https://nostr.download', presets, 0), []);
+  assert.deepEqual(buildMirrorCandidates('not a url', 'https://nostr.download', presets, 1), []);
+  assert.deepEqual(buildMirrorCandidates('https://nostr.download', 'https://nostr.download', [
+    'https://nostr.download',
+  ]), []);
 });
 
 test('Android trust-anchor failures classify as tls', () => {

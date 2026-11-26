@@ -4,7 +4,7 @@ import { randomUUID } from 'expo-crypto';
 import { PROVIDER_PRESETS } from '../constants/providers';
 import { BlossomClient, BlossomError, type UploadOptions, type UploadResult } from '../lib/blossom/client';
 import { NO_TRUSTED_PROVIDER, STORAGE_UNREACHABLE, classifyBlossomError, type BlossomFailureKind } from '../lib/blossom/errors';
-import { buildProviderCandidates } from '../lib/blossom/selection';
+import { buildMirrorCandidates, buildProviderCandidates } from '../lib/blossom/selection';
 import { base64ToBytes, bytesToBase64 } from '../lib/crypto/bytes';
 import { generateMediaKey } from '../lib/crypto/expoAes';
 import { encryptMediaFile } from '../lib/crypto/mediaFiles';
@@ -13,6 +13,7 @@ import { createPool, DEFAULT_DM_RELAYS } from '../lib/nostr/relays';
 import {
   publishKeyMessage,
   resolveInboxRelays,
+  sanitizeMirrorUrls,
   wrapKeyMessage,
   type VlogKeyPayload,
   type VlogThumbnailPayload,
@@ -31,6 +32,7 @@ export type PublishStage =
   | 'checking-provider'
   | 'uploading'
   | 'verifying'
+  | 'mirroring'
   | 'thumbnail'
   | 'distributing'
   | 'saving';
@@ -54,6 +56,8 @@ export interface PublishVlogInput {
   title?: string;
   description?: string;
   providerUrl: string;
+  /** Extra providers to store the encrypted blob on. Defaults to one. */
+  mirrorCopies?: number;
   onProgress?: (progress: PublishProgress) => void;
 }
 
@@ -63,6 +67,7 @@ export interface PublishVlogResult {
   rumorId: string;
   url: string;
   provider: string;
+  mirrors: string[];
   coverUri: string | null;
   encryptedSha256: string;
   encryptedSize: number;
@@ -99,6 +104,160 @@ interface ProviderUploadInput {
   secretKey: Uint8Array;
 }
 
+interface ProviderFailureDetails {
+  status?: number;
+  reason?: string;
+  /** Already formatted for the user. */
+  message?: string;
+}
+
+type ProviderFailure =
+  | ({ kind: BlossomFailureKind; retryable: true } & ProviderFailureDetails)
+  | ({ kind: 'policy'; retryable?: false } & ProviderFailureDetails)
+  | ({ kind: Exclude<BlossomFailureKind, 'policy'>; retryable?: false; cause: unknown } & ProviderFailureDetails);
+
+type ProviderAttempt =
+  | { ok: true; provider: string; client: BlossomClient; upload: UploadResult }
+  | { ok: false; provider: string; failure: ProviderFailure };
+
+/**
+ * One provider attempt: probe, BUD-06 preflight, BUD-02 upload and HEAD
+ * verification. Never throws, so the same routine can back both the primary
+ * fallback chain and best-effort mirror uploads.
+ */
+async function tryProviderUpload(
+  url: string,
+  file: File,
+  input: ProviderUploadInput,
+  report: (progress: PublishProgress) => void,
+  options: { showDetail: boolean; mirror?: boolean; skipProbe?: boolean }
+): Promise<ProviderAttempt> {
+  const client = new BlossomClient(url);
+  const detail = options.showDetail ? client.name : undefined;
+  const checkingStage: PublishStage = options.mirror ? 'mirroring' : 'checking-provider';
+  const uploadingStage: PublishStage = options.mirror ? 'mirroring' : 'uploading';
+
+  report({ stage: checkingStage, detail });
+
+  if (!options.skipProbe) {
+    const probe = await client.probe();
+    if (!probe.ok) {
+      const kind = probe.kind ?? (probe.status !== undefined && probe.status >= 500 ? 'server' : 'transport');
+      return { ok: false, provider: client.name, failure: { kind, retryable: true } };
+    }
+  }
+
+  const preflight = await client.preflight(input.secretKey, input.size, input.sha256, input.mimeType);
+  if (!preflight.supported) {
+    if (preflight.kind === 'unreachable') {
+      return {
+        ok: false,
+        provider: client.name,
+        failure: { kind: preflight.failure ?? 'transport', retryable: true },
+      };
+    }
+  } else if (preflight.status >= 500) {
+    return {
+      ok: false,
+      provider: client.name,
+      failure: { kind: 'server', status: preflight.status, retryable: true },
+    };
+  } else if (preflight.status >= 400) {
+    return {
+      ok: false,
+      provider: client.name,
+      failure: {
+        kind: 'policy',
+        status: preflight.status,
+        reason: preflight.reason,
+        message: preflight.reason ?? `This provider rejected the upload (HTTP ${preflight.status})`,
+      },
+    };
+  }
+
+  report({ stage: uploadingStage, fraction: 0, detail });
+  const uploadOptions: UploadOptions = {
+    sha256: input.sha256,
+    size: input.size,
+    mimeType: input.mimeType,
+    secretKey: input.secretKey,
+    onProgress: ({ bytesSent, totalBytes }) =>
+      report({
+        stage: uploadingStage,
+        fraction: totalBytes > 0 ? bytesSent / totalBytes : 0,
+        detail,
+      }),
+  };
+
+  try {
+    const upload = await client.uploadFile(file, uploadOptions);
+    if (!upload.verified) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      if (!(await client.verifyBlob(upload.descriptor.url, input.size))) {
+        return {
+          ok: false,
+          provider: client.name,
+          failure: { kind: 'server', message: 'verification', retryable: true },
+        };
+      }
+      return { ok: true, provider: client.url, client, upload: { ...upload, verified: true } };
+    }
+    return { ok: true, provider: client.url, client, upload };
+  } catch (error) {
+    if (error instanceof BlossomError) {
+      if (error.status !== undefined && error.status >= 500) {
+        return {
+          ok: false,
+          provider: client.name,
+          failure: { kind: 'server', status: error.status, retryable: true },
+        };
+      }
+      if (error.status !== undefined) {
+        return {
+          ok: false,
+          provider: client.name,
+          failure: {
+            kind: 'policy',
+            status: error.status,
+            reason: error.reason,
+            message: error.reason ? `${error.message}: ${error.reason}` : error.message,
+          },
+        };
+      }
+      if (error.kind === 'tls' || error.kind === 'transport') {
+        return {
+          ok: false,
+          provider: client.name,
+          failure: { kind: error.kind, retryable: true },
+        };
+      }
+      const nonRetryableKind = error.kind === 'policy' ? 'unknown' : error.kind ?? 'unknown';
+      return {
+        ok: false,
+        provider: client.name,
+        failure: { kind: nonRetryableKind, message: error.message, cause: error },
+      };
+    }
+    const kind = classifyBlossomError(error);
+    if (kind === 'tls' || kind === 'transport') {
+      return {
+        ok: false,
+        provider: client.name,
+        failure: { kind, retryable: true },
+      };
+    }
+    return {
+      ok: false,
+      provider: client.name,
+      failure: {
+        kind: kind === 'policy' ? 'unknown' : kind,
+        message: error instanceof Error ? error.message : String(error),
+        cause: error,
+      },
+    };
+  }
+}
+
 /**
  * Tries the selected provider first, then the remaining presets. Transport,
  * TLS, 5xx and verification failures fall through to the next candidate; a 4xx
@@ -113,97 +272,27 @@ async function uploadWithFallback(
   const failures: string[] = [];
   let sawTlsFailure = false;
   let lastKind: BlossomFailureKind = 'unknown';
+  const showDetail = candidates.length > 1;
 
   for (const url of candidates) {
-    const client = new BlossomClient(url);
-    const detail = candidates.length > 1 ? client.name : undefined;
-    report({ stage: 'checking-provider', detail });
+    const attempt = await tryProviderUpload(url, file, input, report, { showDetail });
+    if (attempt.ok) return { client: attempt.client, upload: attempt.upload };
 
-    const probe = await client.probe();
-    if (!probe.ok) {
-      const kind = probe.kind ?? (probe.status !== undefined && probe.status >= 500 ? 'server' : 'unreachable');
-      lastKind = kind === 'unreachable' ? lastKind : kind;
-      if (kind === 'tls') sawTlsFailure = true;
-      failures.push(`${client.name}: ${kind}`);
-      continue;
+    const { failure } = attempt;
+    if (failure.kind === 'tls') sawTlsFailure = true;
+    if (failure.kind === 'policy') {
+      throw new BlossomError(failure.message ?? 'This provider rejected the upload', failure.status, failure.reason);
     }
 
-    const preflight = await client.preflight(input.secretKey, input.size, input.sha256, input.mimeType);
-    if (!preflight.supported) {
-      if (preflight.kind === 'unreachable') {
-        lastKind = preflight.failure ?? lastKind;
-        if (preflight.failure === 'tls') sawTlsFailure = true;
-        failures.push(`${client.name}: ${preflight.failure ?? 'unreachable'}`);
-        continue;
-      }
-    } else if (preflight.status >= 500) {
-      lastKind = 'server';
-      failures.push(`${client.name}: HTTP ${preflight.status}`);
-      continue;
-    } else if (preflight.status >= 400) {
-      throw new BlossomError(
-        preflight.reason ?? `This provider rejected the upload (HTTP ${preflight.status})`,
-        preflight.status,
-        preflight.reason
+    if (failure.retryable) {
+      lastKind = failure.kind;
+      failures.push(
+        `${attempt.provider}: ${failure.status !== undefined ? `HTTP ${failure.status}` : failure.message ?? failure.kind}`
       );
+      continue;
     }
 
-    report({ stage: 'uploading', fraction: 0, detail });
-    const options: UploadOptions = {
-      sha256: input.sha256,
-      size: input.size,
-      mimeType: input.mimeType,
-      secretKey: input.secretKey,
-      onProgress: ({ bytesSent, totalBytes }) =>
-        report({
-          stage: 'uploading',
-          fraction: totalBytes > 0 ? bytesSent / totalBytes : 0,
-          detail,
-        }),
-    };
-
-    try {
-      const upload = await client.uploadFile(file, options);
-      if (!upload.verified) {
-        await new Promise((resolve) => setTimeout(resolve, 600));
-        if (!(await client.verifyBlob(upload.descriptor.url, input.size))) {
-          lastKind = 'server';
-          failures.push(`${client.name}: verification`);
-          continue;
-        }
-        return { client, upload: { ...upload, verified: true } };
-      }
-      return { client, upload };
-    } catch (error) {
-      if (error instanceof BlossomError) {
-        if (error.status !== undefined && error.status >= 500) {
-          lastKind = 'server';
-          failures.push(`${client.name}: HTTP ${error.status}`);
-          continue;
-        }
-        if (error.status !== undefined) {
-          throw new BlossomError(
-            error.reason ? `${error.message}: ${error.reason}` : error.message,
-            error.status,
-            error.reason,
-            error.kind,
-            error.detail
-          );
-        }
-        if (error.kind === 'tls' || error.kind === 'transport') {
-          lastKind = error.kind;
-          if (error.kind === 'tls') sawTlsFailure = true;
-          failures.push(`${client.name}: ${error.kind}`);
-          continue;
-        }
-        throw error;
-      }
-      const kind = classifyBlossomError(error);
-      if (kind !== 'tls' && kind !== 'transport') throw error;
-      lastKind = kind;
-      if (kind === 'tls') sawTlsFailure = true;
-      failures.push(`${client.name}: ${kind}`);
-    }
+    throw failure.cause;
   }
 
   throw new BlossomError(
@@ -214,11 +303,39 @@ async function uploadWithFallback(
   );
 }
 
+interface MirrorUpload {
+  provider: string;
+  url: string;
+}
+
+/**
+ * Best-effort backups. A mirror failure is never fatal: the primary copy is
+ * already verified and recipients can still download from it.
+ */
+async function uploadMirrors(
+  targets: string[],
+  file: File,
+  input: ProviderUploadInput,
+  report: (progress: PublishProgress) => void,
+  options: { skipProbe?: boolean } = {}
+): Promise<MirrorUpload[]> {
+  const mirrors: MirrorUpload[] = [];
+  for (const url of targets) {
+    const attempt = await tryProviderUpload(url, file, input, report, {
+      showDetail: true,
+      mirror: true,
+      skipProbe: options.skipProbe,
+    });
+    if (attempt.ok) mirrors.push({ provider: attempt.provider, url: attempt.upload.descriptor.url });
+  }
+  return mirrors;
+}
+
 /**
  * Full publish pipeline: private copy -> SHA-256 -> encrypt -> provider
- * selection (selected, then presets) -> upload -> verify -> gift-wrap the media
- * key to every active member -> persist. Media is encrypted before any network
- * operation and plaintext is never uploaded.
+ * selection (selected, then presets) -> upload -> best-effort mirror ->
+ * gift-wrap the media key to every active member -> persist. Media is encrypted
+ * before any network operation and plaintext is never uploaded.
  */
 export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogResult> {
   const remoteVlogId = randomUUID();
@@ -277,6 +394,30 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
 
     report({ stage: 'verifying' });
 
+    // Recipients only learn blob URLs from the key payload, so backup copies
+    // must exist before distribution. Failures here never fail the publish.
+    const mirrorTargets = buildMirrorCandidates(
+      provider.url,
+      input.providerUrl,
+      PROVIDER_PRESETS.map((preset) => preset.url),
+      input.mirrorCopies ?? 1
+    );
+    const videoMirrors =
+      mirrorTargets.length > 0
+        ? await uploadMirrors(
+            mirrorTargets,
+            encryptedFile,
+            {
+              sha256: encrypted.sha256,
+              size: encrypted.encryptedSize,
+              mimeType: 'application/octet-stream',
+              secretKey: input.secretKey,
+            },
+            report
+          )
+        : [];
+    const mirrorUrls = sanitizeMirrorUrls(videoMirrors.map((mirror) => mirror.url));
+
     let thumbnail: VlogThumbnailPayload | undefined;
     if (coverFile && prepared.thumbnail) {
       report({ stage: 'thumbnail' });
@@ -291,6 +432,22 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
           secretKey: input.secretKey,
         });
         if (thumbnailUpload.verified) {
+          const coverMirrorUrls: string[] = [];
+          if (videoMirrors.length > 0) {
+            const coverMirrors = await uploadMirrors(
+              videoMirrors.map((mirror) => mirror.provider),
+              encryptedThumbnailFile,
+              {
+                sha256: sealedThumbnail.sha256,
+                size: sealedThumbnail.encryptedSize,
+                mimeType: 'application/octet-stream',
+                secretKey: input.secretKey,
+              },
+              report,
+              { skipProbe: true }
+            );
+            coverMirrorUrls.push(...sanitizeMirrorUrls(coverMirrors.map((mirror) => mirror.url)));
+          }
           await saveThumbnailKey(clipId, thumbnailKey);
           thumbnail = {
             url: thumbnailUpload.descriptor.url,
@@ -302,6 +459,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
             mimeType: 'image/jpeg',
             width: prepared.thumbnail.width,
             height: prepared.thumbnail.height,
+            ...(coverMirrorUrls.length > 0 ? { mirrors: coverMirrorUrls } : {}),
           };
         }
       } catch {
@@ -340,6 +498,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       height: prepared.height ?? undefined,
       thumbnail,
       createdAt: Math.floor(Date.now() / 1000),
+      ...(mirrorUrls.length > 0 ? { mirrors: mirrorUrls } : {}),
     };
 
     const pool = createPool({ secretKey: input.secretKey });
@@ -391,7 +550,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       position: 0,
       provider: provider.id,
       url: uploadedUrl,
-      mirrors: null,
+      mirrors: mirrorUrls.length > 0 ? mirrorUrls : null,
       encryptedSha256: encrypted.sha256,
       plaintextSha256,
       encryptedSize: encrypted.encryptedSize,
@@ -412,6 +571,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       rumorId,
       url: uploadedUrl,
       provider: provider.id,
+      mirrors: mirrorUrls,
       coverUri: coverFile?.uri ?? null,
       encryptedSha256: encrypted.sha256,
       encryptedSize: encrypted.encryptedSize,

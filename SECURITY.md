@@ -157,8 +157,12 @@ relay cannot forge a key message from another member.
 - Some providers MIME-sniff and reject opaque ciphertext. See
   [PROVIDERS.md](./PROVIDERS.md); the app preflights and reports the provider's
   reason.
-- Mirrors are supported at the data-model level (`clips.mirrors`) but no
-  automatic mirroring is implemented.
+- Mirrors are best-effort copies of the same ciphertext on a second provider and
+  are listed in the encrypted key payload. They reuse the same media key, add no
+  new secret material, and do not change who can decrypt.
+- Mirrors arrive from other users and are untrusted: only unique public `https`
+  origins are kept (at most four), loopback/LAN/link-local hosts are rejected,
+  and downloads still verify the pinned ciphertext hash before decryption.
 - Uploaded blobs are not deleted if publishing fails after upload. This can
   leave orphaned ciphertext on a provider (unreadable without the key).
 

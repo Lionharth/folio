@@ -4,6 +4,7 @@ import { createRumor, createSeal, createWrap, unwrapEvent } from 'nostr-tools/ni
 import { KIND_PRIVATE_MESSAGE, parseControlPayload, type CircleControlPayload } from './circleControl';
 
 import { MAX_THUMBNAIL_BYTES } from '../../constants/media';
+import { httpOrigin, trimServerUrl } from '../blossom/origin';
 import { bytesToBase64, base64ToBytes } from '../crypto/bytes';
 import { DEFAULT_DM_RELAYS, publishToRelays, queryRelay, queryRelays, type Pool } from './relays';
 
@@ -36,6 +37,8 @@ export interface VlogThumbnailPayload {
   mimeType: string;
   width: number;
   height: number;
+  /** Extra verified copies of the same encrypted cover. */
+  mirrors?: string[];
 }
 
 export interface VlogKeyPayload {
@@ -156,6 +159,7 @@ export function parseKeyPayload(tags: string[][]): VlogKeyPayload | null {
   } catch {
     return null;
   }
+  if (!parsed || typeof parsed !== 'object') return null;
   if (parsed.v !== 1 || parsed.format !== FOLIO_FORMAT_FC1) return null;
   if (!parsed.keyB64 || !parsed.encryptedSha256 || !parsed.clipId || !parsed.vlogId) return null;
   if (parsed.authorName !== undefined) {
@@ -165,6 +169,9 @@ export function parseKeyPayload(tags: string[][]): VlogKeyPayload | null {
   }
   if (!Number.isFinite(parsed.encryptedSize) || !Number.isFinite(parsed.durationMs)) return null;
   if (base64ToBytes(parsed.keyB64).length !== 32) return null;
+  const mirrors = sanitizeMirrorUrls(parsed.mirrors);
+  if (mirrors.length > 0) parsed.mirrors = mirrors;
+  else delete parsed.mirrors;
   if (parsed.thumbnail !== undefined) {
     const thumbnail = parseThumbnailPayload(parsed.thumbnail);
     if (thumbnail) parsed.thumbnail = thumbnail;
@@ -174,6 +181,31 @@ export function parseKeyPayload(tags: string[][]): VlogKeyPayload | null {
 }
 
 const HEX_64 = /^[0-9a-f]{64}$/;
+const MAX_MIRROR_URLS = 4;
+
+/**
+ * Mirrors are sender-supplied download fallbacks, so they are untrusted input.
+ * Keep only public https blobs, one per origin, bounded in number.
+ */
+export function sanitizeMirrorUrls(value: unknown, max = MAX_MIRROR_URLS): string[] {
+  if (!Array.isArray(value)) return [];
+  const limit = Math.max(0, Math.floor(max));
+  if (limit === 0) return [];
+
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const origin = httpOrigin(trimmed, { httpsOnly: true, publicHostOnly: true });
+    if (!origin || seen.has(origin)) continue;
+    seen.add(origin);
+    urls.push(trimServerUrl(trimmed));
+    if (urls.length >= limit) break;
+  }
+  return urls;
+}
 
 /**
  * Thumbnails are optional and additive, so a malformed cover is dropped instead
@@ -213,6 +245,7 @@ export function parseThumbnailPayload(value: unknown): VlogThumbnailPayload | nu
     return null;
   }
   if (keyLength !== 32) return null;
+  const mirrors = sanitizeMirrorUrls(candidate.mirrors);
   return {
     url: candidate.url,
     keyB64: candidate.keyB64,
@@ -227,6 +260,7 @@ export function parseThumbnailPayload(value: unknown): VlogThumbnailPayload | nu
     mimeType: candidate.mimeType,
     width: candidate.width,
     height: candidate.height,
+    ...(mirrors.length > 0 ? { mirrors } : {}),
   };
 }
 

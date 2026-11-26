@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, View } from 'react-native';
 import { Redirect, router, useFocusEffect, useLocalSearchParams, usePreventRemove } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -19,6 +19,7 @@ import { ScreenScroll } from '../components/ui/Screen';
 import { EmptyState, ErrorState, LoadingState } from '../components/ui/States';
 import { TextField } from '../components/ui/TextField';
 import { DEFAULT_PROVIDER_URL, PROVIDER_PRESETS } from '../constants/providers';
+import { getSetting, setSetting } from '../lib/database/settings';
 import { listCirclesForViewer } from '../lib/database/vlogs';
 import { readSecretKey } from '../lib/nostr/identity';
 import { invalidateVlogs, queryKeys } from '../lib/queryKeys';
@@ -46,6 +47,7 @@ const STAGE_LABELS: Record<PublishProgress['stage'], string> = {
   'checking-provider': 'Checking encrypted storage',
   uploading: 'Uploading the encrypted video',
   verifying: 'Verifying the upload',
+  mirroring: 'Storing a backup copy',
   thumbnail: 'Protecting the cover',
   distributing: 'Sharing the key privately with your circle',
   saving: 'Saving the entry to Archive',
@@ -65,12 +67,33 @@ export default function CreateScreen() {
   const [description, setDescription] = useState('');
   const [chosenCircleId, setCircleId] = useState<string | null>(null);
   const [providerUrl, setProviderUrl] = useState(DEFAULT_PROVIDER_URL);
+  const [mirrorCopies, setMirrorCopies] = useState(true);
   const [publishing, setPublishing] = useState(false);
   const [progress, setProgress] = useState<PublishProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [permissionBlocked, setPermissionBlocked] = useState(false);
   const [showDelivery, setShowDelivery] = useState(false);
   const [allowLeave, setAllowLeave] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSetting('media.mirrorCopies')
+      .then((value) => {
+        if (!cancelled) setMirrorCopies(value !== '0');
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleMirrorCopies = useCallback(() => {
+    setMirrorCopies((current) => {
+      const next = !current;
+      setSetting('media.mirrorCopies', next ? '1' : '0').catch(() => undefined);
+      return next;
+    });
+  }, []);
 
   const circlesQuery = useQuery({
     queryKey: queryKeys.circles(identity?.pubkey),
@@ -189,6 +212,7 @@ export default function CreateScreen() {
         title,
         description,
         providerUrl,
+        mirrorCopies: mirrorCopies ? 1 : 0,
         onProgress: setProgress,
       });
       await Promise.all([
@@ -344,6 +368,34 @@ export default function CreateScreen() {
                 </Pressable>
               );
             })}
+            <Pressable
+              onPress={toggleMirrorCopies}
+              disabled={publishing}
+              accessibilityRole="switch"
+              accessibilityLabel="Keep a backup copy on another server"
+              accessibilityState={{ checked: mirrorCopies, disabled: publishing }}
+              style={{
+                borderWidth: 1,
+                borderColor: mirrorCopies ? theme.colors.textPrimary : theme.colors.border,
+                borderRadius: theme.radius.md,
+                padding: theme.spacing.lg,
+                minHeight: 64,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}>
+                <View style={{ flex: 1, gap: theme.spacing.xs }}>
+                  <AppText variant="bodyStrong">Backup copy</AppText>
+                  <AppText variant="caption" color="textSecondary">
+                    Stores the encrypted video on a second server. Uses extra data.
+                  </AppText>
+                </View>
+                <Feather
+                  name={mirrorCopies ? 'check-square' : 'square'}
+                  size={18}
+                  color={mirrorCopies ? theme.colors.textPrimary : theme.colors.textTertiary}
+                />
+              </View>
+            </Pressable>
             <AppText variant="caption" color="textTertiary">
               Storage can change. Keep your originals.
             </AppText>

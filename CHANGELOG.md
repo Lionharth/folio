@@ -31,6 +31,14 @@
 - Local OS notifications for replies and reactions under a new Replies and
   reactions setting, grouped per moment so a burst of activity does not spam the
   notification tray.
+- Publish stores an encrypted backup copy on a second Blossom provider by
+  default. The copy is uploaded before the key is shared, listed in the
+  `folio-key` payload, and used automatically when the primary download fails.
+  The encrypted cover is backed up the same way. A Create → Advanced toggle can
+  disable the extra upload.
+- Received mirror URLs are validated before use: only public `https` origins
+  are kept, bounded to four, loopback/LAN/link-local hosts are rejected, and the
+  pinned ciphertext hash is still verified before decryption.
 
 ### Changed
 

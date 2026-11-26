@@ -67,11 +67,24 @@ async function downloadThumbnail(vlog: Vlog, clip: Clip): Promise<string | null>
   const encrypted = newCacheFile(`${clip.id}.thumb.fc1`);
   const destination = thumbnailFile(clip.id);
   try {
-    const client = new BlossomClient(new URL(descriptor.url).origin);
-    await client.downloadToFile(descriptor.url, encrypted, {
-      expectedSha256: descriptor.sha256,
-      expectedSize: descriptor.encryptedSize,
-    });
+    const sources = [descriptor.url, ...(descriptor.mirrors ?? [])].filter(
+      (value): value is string => Boolean(value)
+    );
+    let lastError: unknown = null;
+    for (const source of sources) {
+      try {
+        const client = new BlossomClient(new URL(source).origin);
+        await client.downloadToFile(source, encrypted, {
+          expectedSha256: descriptor.sha256,
+          expectedSize: descriptor.encryptedSize,
+        });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError) throw lastError;
 
     if (destination.exists) destination.delete();
     const header = await decryptMediaFile(encrypted, destination, key);
