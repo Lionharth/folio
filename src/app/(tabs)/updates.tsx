@@ -123,6 +123,7 @@ export default function UpdatesScreen() {
       ? presentInboxSync(lastResult, 'updates')
       : null;
   const currentSyncError = syncIdentityId === identity?.id ? syncError : null;
+  const showSyncNotice = syncPresentation && syncPresentation.message !== "You're up to date";
 
   const emptyState = () => {
     if (vlogsQuery.isLoading) return <VlogListSkeleton />;
@@ -262,7 +263,7 @@ export default function UpdatesScreen() {
             />
             {offline ? <InlineNotice message="Offline · showing saved moments" tone="warning" /> : null}
             {currentSyncError ? <InlineNotice message="Couldn’t refresh" tone="error" /> : null}
-            {!currentSyncError && syncPresentation ? (
+            {!currentSyncError && showSyncNotice && syncPresentation ? (
               <View style={{ marginTop: theme.spacing.sm }}>
                 <InlineNotice message={syncPresentation.message} tone={syncPresentation.tone} />
               </View>
