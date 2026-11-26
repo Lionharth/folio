@@ -194,9 +194,10 @@ relay cannot forge a key message from another member.
 - No remote push notifications and no push tokens. Notifications are local,
   generated on this device after an inbox sync; delivery is best-effort and
   depends on the OS running the background worker.
-- Local notifications can expose circle names, author names and member names on
-  a locked screen and in notification history. Notification payloads contain only
-  a routing URL, never keys, media keys or plaintext content.
+- Local notifications can expose circle names, author names, member names and
+  reaction emoji on a locked screen and in notification history. Comment bodies
+  are not included in notification copy. Notification payloads contain only a
+  routing URL, never keys, media keys or plaintext content.
 - No certificate pinning.
 - No biometric lock.
 - No fuzzing; unit tests cover framing/tamper cases but not the native AES

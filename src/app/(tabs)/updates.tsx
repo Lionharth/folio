@@ -13,6 +13,7 @@ import { InlineNotice } from '../../components/ui/Notice';
 import { Screen } from '../../components/ui/Screen';
 import { EmptyState, ErrorState, LoadingState, VlogListSkeleton } from '../../components/ui/States';
 import { VlogRow } from '../../components/vlog/VlogRow';
+import { countUnreadActivity } from '../../lib/database/activity';
 import { listContactNames } from '../../lib/database/contacts';
 import { listCirclesForViewer, listVlogs } from '../../lib/database/vlogs';
 import { shortNpub } from '../../lib/nostr/format';
@@ -74,6 +75,12 @@ export default function UpdatesScreen() {
     queryFn: () => listVlogs(identity!.pubkey, { circleId: circleFilter, limit: 1 }),
     enabled: Boolean(identity),
   });
+  const activityUnreadQuery = useQuery({
+    queryKey: queryKeys.activityUnread(identity?.pubkey),
+    queryFn: () => countUnreadActivity(identity!.pubkey),
+    enabled: Boolean(identity),
+  });
+  const activityUnread = identity ? (activityUnreadQuery.data ?? 0) : 0;
 
   const circlesById = useMemo(() => {
     const map = new Map<string, string>();
@@ -216,7 +223,42 @@ export default function UpdatesScreen() {
             <PageHeader
               eyebrow="folio"
               title="New moments"
-              right={<IconButton icon="refresh-cw" label="Check for updates" loading={syncing} onPress={() => void sync()} />}
+              right={
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.xs }}>
+                  <View>
+                    <IconButton
+                      icon="bell"
+                      label={activityUnread > 0 ? `Inbox, ${activityUnread} unread` : 'Inbox'}
+                      onPress={() => router.push('/inbox')}
+                    />
+                    {activityUnread > 0 ? (
+                      <View
+                        pointerEvents="none"
+                        style={{
+                          position: 'absolute',
+                          top: 4,
+                          right: 4,
+                          minWidth: 16,
+                          height: 16,
+                          paddingHorizontal: 4,
+                          borderRadius: 8,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          backgroundColor: theme.colors.ink,
+                        }}
+                      >
+                        <AppText
+                          variant="meta"
+                          style={{ color: theme.colors.onInk, fontSize: 9.5, lineHeight: 11 }}
+                        >
+                          {activityUnread > 99 ? '99+' : activityUnread}
+                        </AppText>
+                      </View>
+                    ) : null}
+                  </View>
+                  <IconButton icon="refresh-cw" label="Check for updates" loading={syncing} onPress={() => void sync()} />
+                </View>
+              }
             />
             {offline ? <InlineNotice message="Offline · showing saved moments" tone="warning" /> : null}
             {currentSyncError ? <InlineNotice message="Couldn’t refresh" tone="error" /> : null}

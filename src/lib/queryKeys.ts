@@ -12,6 +12,8 @@ export const queryKeys = {
   vlogs: (viewerPubkey?: string) => ['vlogs', viewerPubkey] as const,
   vlog: (viewerPubkey: string | undefined, vlogId: string) => ['vlogs', viewerPubkey, 'detail', vlogId] as const,
   unread: (viewerPubkey?: string) => ['unread', viewerPubkey] as const,
+  activity: (viewerPubkey?: string) => ['activity', viewerPubkey] as const,
+  activityUnread: (viewerPubkey?: string) => ['activity-unread', viewerPubkey] as const,
   comments: (viewerPubkey?: string) => ['comments', viewerPubkey] as const,
   reactions: (viewerPubkey?: string) => ['reactions', viewerPubkey] as const,
   commentReactions: (viewerPubkey?: string) => ['comment-reactions', viewerPubkey] as const,
@@ -31,6 +33,16 @@ export async function invalidateCircles(queryClient: QueryClient, viewerPubkey?:
   ]);
 }
 
+export async function invalidateActivity(
+  queryClient: QueryClient,
+  viewerPubkey?: string
+): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.activity(viewerPubkey) }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.activityUnread(viewerPubkey) }),
+  ]);
+}
+
 export async function invalidateSocial(queryClient: QueryClient, viewerPubkey?: string): Promise<void> {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.comments(viewerPubkey) }),
@@ -44,6 +56,7 @@ export async function invalidateAfterInbox(queryClient: QueryClient, viewerPubke
     invalidateCircles(queryClient, viewerPubkey),
     invalidateVlogs(queryClient, viewerPubkey),
     invalidateSocial(queryClient, viewerPubkey),
+    invalidateActivity(queryClient, viewerPubkey),
     queryClient.invalidateQueries({ queryKey: queryKeys.unread(viewerPubkey) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.contacts }),
     queryClient.invalidateQueries({ queryKey: ['contact-name'] }),

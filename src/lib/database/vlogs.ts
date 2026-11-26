@@ -499,14 +499,18 @@ export async function getVlog(viewerPubkey: string, id: string): Promise<Vlog | 
 export async function getVlogCircleByRemoteId(
   viewerPubkey: string,
   remoteId: string
-): Promise<{ id: string; circleId: string | null } | null> {
+): Promise<{ id: string; circleId: string | null; authorPubkey: string } | null> {
   const db = await getDatabase();
-  const row = await db.getFirstAsync<{ id: string; circle_id: string | null }>(
-    'SELECT id, circle_id FROM vlogs WHERE remote_id = ? AND viewer_pubkey = ? LIMIT 1',
+  const row = await db.getFirstAsync<{
+    id: string;
+    circle_id: string | null;
+    author_pubkey: string;
+  }>(
+    'SELECT id, circle_id, author_pubkey FROM vlogs WHERE remote_id = ? AND viewer_pubkey = ? LIMIT 1',
     remoteId,
     viewerPubkey
   );
-  return row ? { id: row.id, circleId: row.circle_id } : null;
+  return row ? { id: row.id, circleId: row.circle_id, authorPubkey: row.author_pubkey } : null;
 }
 
 async function attachClips(vlogs: Vlog[]): Promise<Vlog[]> {

@@ -4,9 +4,10 @@ import * as Notifications from 'expo-notifications';
 import { AndroidImportance, IosAuthorizationStatus } from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 
+import { countUnreadActivity } from '../lib/database/activity';
 import { getContactNames } from '../lib/database/contacts';
 import { getSetting, setSetting } from '../lib/database/settings';
-import { countUnread, listCirclesForViewer } from '../lib/database/vlogs';
+import { countUnread, listCircles } from '../lib/database/vlogs';
 import {
   buildInboxNotifications,
   type InboxNotificationEvents,
@@ -23,27 +24,31 @@ const PREFERENCE_KEYS = {
   posts: 'notifications.posts',
   invites: 'notifications.invites',
   membership: 'notifications.membership',
+  activity: 'notifications.activity',
 } as const;
 
 const MOMENTS_CHANNEL = 'moments';
 const CIRCLES_CHANNEL = 'circles';
+const SOCIAL_CHANNEL = 'social';
 
 async function isPermissionGranted(status: Notifications.NotificationPermissionsStatus): Promise<boolean> {
   return status.granted || status.ios?.status === IosAuthorizationStatus.PROVISIONAL;
 }
 
 export async function getNotificationPreferences(): Promise<NotificationPreferences> {
-  const [enabled, posts, invites, membership] = await Promise.all([
+  const [enabled, posts, invites, membership, activity] = await Promise.all([
     getSetting(PREFERENCE_KEYS.enabled),
     getSetting(PREFERENCE_KEYS.posts),
     getSetting(PREFERENCE_KEYS.invites),
     getSetting(PREFERENCE_KEYS.membership),
+    getSetting(PREFERENCE_KEYS.activity),
   ]);
   return {
     enabled: enabled === '1',
     posts: posts !== '0',
     invites: invites !== '0',
     membership: membership !== '0',
+    activity: activity !== '0',
   };
 }
 
@@ -63,6 +68,10 @@ export async function ensureAndroidChannelsAsync(): Promise<void> {
     }),
     Notifications.setNotificationChannelAsync(CIRCLES_CHANNEL, {
       name: 'Invitations and circle changes',
+      importance: AndroidImportance.DEFAULT,
+    }),
+    Notifications.setNotificationChannelAsync(SOCIAL_CHANNEL, {
+      name: 'Replies and reactions',
       importance: AndroidImportance.DEFAULT,
     }),
   ]);
@@ -142,17 +151,21 @@ export async function emitInboxNotifications(
   identity: StoredIdentity
 ): Promise<number> {
   const hasEvents =
-    events.moments.length > 0 || events.invites.length > 0 || events.membership.length > 0;
+    events.moments.length > 0 ||
+    events.invites.length > 0 ||
+    events.membership.length > 0 ||
+    events.social.length > 0;
   if (!hasEvents) return 0;
 
   const preferences = await getNotificationPreferences();
   if (!(await effectiveNotificationsEnabled(preferences))) return 0;
 
-  const circles = await listCirclesForViewer(identity.pubkey);
+  const circles = await listCircles();
   const pubkeys = new Set<string>();
   for (const event of events.moments) pubkeys.add(event.authorPubkey);
   for (const event of events.invites) pubkeys.add(event.ownerPubkey);
   for (const event of events.membership) pubkeys.add(event.memberPubkey);
+  for (const event of events.social) pubkeys.add(event.actorPubkey);
   const names = await getContactNames([...pubkeys]);
   const mutedCircleIds = circles.filter((circle) => circle.muted).map((circle) => circle.id);
   const requests = buildInboxNotifications({
@@ -196,7 +209,11 @@ export async function setIconBadgeFromUnreadsAsync(pubkey: string): Promise<void
   try {
     const preferences = await getNotificationPreferences();
     if (!(await effectiveNotificationsEnabled(preferences))) return;
-    await Notifications.setBadgeCountAsync(await countUnread(pubkey));
+    const [moments, activity] = await Promise.all([
+      countUnread(pubkey),
+      countUnreadActivity(pubkey),
+    ]);
+    await Notifications.setBadgeCountAsync(moments + activity);
   } catch {
     // Launchers may not support icon badges.
   }

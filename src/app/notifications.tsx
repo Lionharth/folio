@@ -14,7 +14,7 @@ import { ScreenScroll } from '../components/ui/Screen';
 import { LoadingState } from '../components/ui/States';
 import type { NotificationPreferences } from '../lib/notifications/copy';
 import { listCirclesForViewer, setCircleMuted } from '../lib/database/vlogs';
-import { invalidateCircles, queryKeys } from '../lib/queryKeys';
+import { invalidateActivity, invalidateCircles, queryKeys } from '../lib/queryKeys';
 import {
   getInboxBackgroundTaskStateAsync,
   getNotificationPermissionAsync,
@@ -27,7 +27,7 @@ import { useSession } from '../stores/session';
 import { useTheme } from '../theme/ThemeProvider';
 
 type Notice = { message: string; tone: 'neutral' | 'success' | 'warning' | 'error' };
-type EventPreference = 'posts' | 'invites' | 'membership';
+type EventPreference = 'posts' | 'invites' | 'membership' | 'activity';
 
 export default function NotificationsScreen() {
   const theme = useTheme();
@@ -121,9 +121,14 @@ export default function NotificationsScreen() {
     setNotice(null);
     try {
       await setCircleMuted(circleId, muted);
-      if (identity) await invalidateCircles(queryClient, identity.pubkey);
+      if (identity) {
+        await Promise.all([
+          invalidateCircles(queryClient, identity.pubkey),
+          invalidateActivity(queryClient, identity.pubkey),
+        ]);
+      }
       setNotice({
-        message: muted ? `${name} moments are muted.` : `${name} moments will notify again.`,
+        message: muted ? `${name} alerts are muted.` : `${name} alerts will notify again.`,
         tone: 'success',
       });
     } catch (error) {
@@ -192,6 +197,14 @@ export default function NotificationsScreen() {
             />
             <Divider />
             <SettingRow
+              title="Replies and reactions"
+              subtitle="Comments and reactions on your moments and comments."
+              value={preferences.activity}
+              disabled={!effectiveEnabled || Boolean(busy)}
+              onValueChange={(value) => void setEventPreference('activity', value)}
+            />
+            <Divider />
+            <SettingRow
               title="Invitations"
               subtitle="When someone invites you to a circle."
               value={preferences.invites}
@@ -246,7 +259,7 @@ export default function NotificationsScreen() {
                 <View key={circle.id}>
                   <SettingRow
                     title={circle.name}
-                    subtitle={circle.muted ? 'Posts are muted' : 'Posts notify'}
+                    subtitle={circle.muted ? 'All alerts muted' : 'All alerts on'}
                     value={circle.muted}
                     disabled={Boolean(busy)}
                     onValueChange={(value) => void toggleCircleMute(circle.id, circle.name, value)}

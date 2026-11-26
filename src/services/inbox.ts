@@ -1,6 +1,11 @@
 import { getPublicKey } from 'nostr-tools/pure';
 
 import { base64ToBytes } from '../lib/crypto/bytes';
+import {
+  pruneActivity,
+  recordInviteActivity,
+  recordMembershipActivity,
+} from '../lib/database/activity';
 import { upsertContactName } from '../lib/database/contacts';
 import {
   getInboxState,
@@ -35,6 +40,7 @@ import { isNewerEvidence, decideInviteOutcome } from '../lib/nostr/membershipRul
 import { DEFAULT_DM_RELAYS, createPool, type Pool } from '../lib/nostr/relays';
 import { saveMediaKey, saveThumbnailKey } from '../lib/security/mediaKeys';
 import type { Clip, Vlog } from '../types/models';
+import { toMillis } from '../utils/time';
 import {
   flushControlOutbox,
   flushMembershipReceipts,
@@ -65,17 +71,29 @@ export interface InboxRefreshResult {
   events: InboxNotificationEvents;
 }
 
+type InboxWindowSource = 'incremental' | 'backfill';
+
 interface CollectedInbox {
   files: Map<string, InboxMessage>;
   controls: Map<string, ControlInboxMessage>;
+  controlSources: Map<string, InboxWindowSource>;
 }
 
-function collectPage(collected: CollectedInbox, page: InboxPageResult): void {
+function collectPage(
+  collected: CollectedInbox,
+  page: InboxPageResult,
+  source: InboxWindowSource
+): void {
   for (const file of page.files) {
     if (!collected.files.has(file.rumorId)) collected.files.set(file.rumorId, file);
   }
   for (const control of page.controls) {
-    if (!collected.controls.has(control.rumorId)) collected.controls.set(control.rumorId, control);
+    if (!collected.controls.has(control.rumorId)) {
+      collected.controls.set(control.rumorId, control);
+      collected.controlSources.set(control.rumorId, source);
+    } else if (source === 'incremental') {
+      collected.controlSources.set(control.rumorId, 'incremental');
+    }
   }
 }
 
@@ -97,6 +115,7 @@ async function fetchWindow(
   secretKey: Uint8Array,
   options: { since?: number; states: Map<string, RelayWindowCursor> },
   maxPages: number,
+  source: InboxWindowSource,
   collected: CollectedInbox
 ): Promise<WindowResult> {
   const states = options.states;
@@ -120,7 +139,7 @@ async function fetchWindow(
       limit: PAGE_SIZE,
       timeoutMs: 8_000,
     });
-    collectPage(collected, page);
+    collectPage(collected, page, source);
 
     for (const relayPage of page.relays) {
       const state = states.get(relayPage.relay);
@@ -324,9 +343,16 @@ export async function refreshInbox(
   const pool = createPool({ secretKey });
   try {
     const state = await getInboxState(pubkey);
+    // Social activity is new-only: only controls from the incremental window
+    // may create Inbox rows, never controls paged in by a backfill window.
+    const recordSocialActivity = Boolean(state?.lastSyncAt);
     const relayStates = await listRelayStates(pubkey, relays);
-    const collected: CollectedInbox = { files: new Map(), controls: new Map() };
-    const events: InboxNotificationEvents = { moments: [], invites: [], membership: [] };
+    const collected: CollectedInbox = {
+      files: new Map(),
+      controls: new Map(),
+      controlSources: new Map(),
+    };
+    const events: InboxNotificationEvents = { moments: [], invites: [], membership: [], social: [] };
     const circleNames = new Map<string, string | null>();
     const activeMembers = new Map<string, boolean>();
     const resolveCircleName = async (circleId: string): Promise<string | null> => {
@@ -369,6 +395,7 @@ export async function refreshInbox(
         secretKey,
         { since, states: incrementalStates },
         MAX_INCREMENTAL_PAGES,
+        'incremental',
         collected
       );
     }
@@ -379,6 +406,7 @@ export async function refreshInbox(
         secretKey,
         { states: backfillStates },
         MAX_BACKFILL_PAGES,
+        'backfill',
         collected
       );
     }
@@ -438,14 +466,27 @@ export async function refreshInbox(
         });
         if (result?.created) restored += 1;
       } else {
-        const removedByOwner =
-          collectEvents && candidate.source === 'removed' && payload.action === 'removed';
-        const name = removedByOwner
-          ? payload.circle?.name ?? (await resolveCircleName(payload.circleId))
-          : null;
+        let removedByOwner = candidate.source === 'removed' && payload.action === 'removed';
+        let name: string | null = null;
+        if (removedByOwner) {
+          const circle = await getCircle(payload.circleId);
+          if (circle && circle.ownerPubkey === payload.ownerPubkey) {
+            name = circle.name;
+            await recordMembershipActivity({
+              viewerPubkey: pubkey,
+              actorPubkey: payload.ownerPubkey,
+              subjectPubkey: payload.memberPubkey,
+              circleId: payload.circleId,
+              kind: 'member-removed',
+              createdAt: toMillis(payload.at),
+            });
+          } else {
+            removedByOwner = false;
+          }
+        }
         await suppressCircleFromReceipt({ payload, selfPubkey: pubkey });
         suppressed += 1;
-        if (removedByOwner) {
+        if (removedByOwner && collectEvents) {
           events.membership.push({
             circleId: payload.circleId,
             circleName: name ?? '',
@@ -467,6 +508,14 @@ export async function refreshInbox(
         circleNames.set(circle.id, circle.name);
         if (await markCircleMemberActive(circle.id, control.payload.memberPubkey)) {
           accepted += 1;
+          await recordMembershipActivity({
+            viewerPubkey: pubkey,
+            actorPubkey: control.payload.memberPubkey,
+            subjectPubkey: control.payload.memberPubkey,
+            circleId: circle.id,
+            kind: 'member-joined',
+            createdAt: toMillis(control.payload.at),
+          });
           if (collectEvents) {
             events.membership.push({
               circleId: circle.id,
@@ -511,6 +560,13 @@ export async function refreshInbox(
       if (outcome === 'pending') {
         if (stored.created) {
           invites += 1;
+          await recordInviteActivity({
+            viewerPubkey: pubkey,
+            actorPubkey: circle.ownerPubkey,
+            circleId: circle.id,
+            inviteId: stored.invite.id,
+            createdAt: toMillis(control.payload.invitedAt),
+          });
           if (collectEvents) {
             circleNames.set(circle.id, circle.name);
             events.invites.push({
@@ -580,12 +636,33 @@ export async function refreshInbox(
     for (const control of controls) {
       const payload = control.payload;
       if (payload.type !== 'circle-comment' && payload.type !== 'circle-reaction') continue;
-      await applySocialControl({
+      const result = await applySocialControl({
         viewerPubkey: pubkey,
         senderPubkey: control.senderPubkey,
         payload,
         cache: socialCache,
+        recordActivity:
+          recordSocialActivity &&
+          collected.controlSources.get(control.rumorId) === 'incremental',
       });
+      const activity = result.activity;
+      if (
+        collectEvents &&
+        activity &&
+        activity.localVlogId &&
+        activity.circleId &&
+        (activity.kind === 'comment' || activity.kind === 'reply' || activity.kind === 'reaction')
+      ) {
+        events.social.push({
+          vlogId: activity.localVlogId,
+          circleId: activity.circleId,
+          circleName: await resolveCircleName(activity.circleId),
+          actorPubkey: activity.actorPubkey,
+          kind: activity.kind,
+          targetType: activity.targetType ?? undefined,
+          emoji: activity.emoji ?? null,
+        });
+      }
     }
 
     let added = 0;
@@ -644,6 +721,7 @@ export async function refreshInbox(
       backfillUntil: null,
       lastSyncAt: nextLastSync,
     });
+    await pruneActivity(pubkey, 200);
 
     await flushControlOutbox(secretKey, pool, 5_000);
     await flushMembershipReceipts(secretKey, pool, 3_000);

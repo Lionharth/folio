@@ -66,6 +66,7 @@ function RootStack() {
         <Stack.Screen name="circle/[id]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="circle/new" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="identity/new" options={{ animation: 'slide_from_right' }} />
+        <Stack.Screen name="inbox" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="notifications" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="lab" options={{ animation: 'slide_from_bottom' }} />
       </Stack>
@@ -107,6 +108,7 @@ export default function RootLayout() {
       void reconcileNotificationRuntimeAsync();
       void clearIconBadgeAsync();
       void queryClient.invalidateQueries({ queryKey: ['unread'] });
+      void queryClient.invalidateQueries({ queryKey: ['activity-unread'] });
     });
     return () => subscription.remove();
   }, []);

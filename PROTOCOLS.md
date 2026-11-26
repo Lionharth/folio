@@ -321,9 +321,17 @@ names, membership, invitation, roster, social and file processing.
 
 Notifications are entirely device-local. Folio does not publish a notification
 event, does not add a relay payload, and does not exchange push tokens. The same
-`kind: 1059` inbox sync that applies moments, invitations and membership
-transitions produces local notification copy after those transitions are durable.
-No new protocol message is introduced.
+`kind: 1059` inbox sync that applies moments, invitations, membership transitions
+and social controls produces local notification copy after those transitions are
+durable. No new protocol message is introduced.
+
+Social activity is also materialized locally in the `activity` table for the
+in-app Inbox. Activity is new-only: it is recorded when a received comment or
+reaction newly applies after the initial backfill. Notification routing for a
+reply, comment or reaction uses `/vlog/<local-id>?comments=1` so the conversation
+opens expanded. Comment bodies are not copied into notification text. Per-circle
+mute suppresses every notification family for that circle and hides its Inbox
+activity while muted; the circle's moments remain visible in Updates.
 
 ## FOLIO-FC1
 

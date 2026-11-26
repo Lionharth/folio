@@ -22,7 +22,21 @@
 
 ## Unreleased
 
+### Added
+
+- A dedicated Inbox for replies, comments on your moments, reactions to your
+  moments and comments, circle invitations, and membership changes. The bell in
+  the Updates header shows an unread badge; opening the Inbox marks activity read.
+  Social rows open the moment with its conversation expanded.
+- Local OS notifications for replies and reactions under a new Replies and
+  reactions setting, grouped per moment so a burst of activity does not spam the
+  notification tray.
+
 ### Changed
+
+- Per-circle mute is now a full mute: it suppresses moment, invitation,
+  membership and social alerts for that circle and hides its Inbox activity while
+  muted. The circle's content remains visible in Updates and Circles.
 
 - The iOS app icon no longer uses the Expo Icon Composer bundle; the serif `f`
   launcher icon now applies on both platforms, and the Android adaptive icon

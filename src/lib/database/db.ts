@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
 const DATABASE_NAME = 'folio.db';
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 let database: SQLite.SQLiteDatabase | null = null;
 let opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -279,6 +279,31 @@ CREATE INDEX IF NOT EXISTS vlogs_unread_idx
   ON vlogs (viewer_pubkey, unread);
 `;
 
+const MIGRATION_10_TABLES = `
+CREATE TABLE IF NOT EXISTS activity (
+  viewer_pubkey TEXT NOT NULL,
+  id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  actor_pubkey TEXT NOT NULL,
+  circle_id TEXT,
+  remote_vlog_id TEXT,
+  comment_id TEXT,
+  target_comment_id TEXT,
+  target_type TEXT,
+  emoji TEXT,
+  invite_id TEXT,
+  created_at INTEGER NOT NULL,
+  received_at INTEGER NOT NULL,
+  read_at INTEGER,
+  PRIMARY KEY (viewer_pubkey, id)
+);
+
+CREATE INDEX IF NOT EXISTS activity_feed_idx
+  ON activity (viewer_pubkey, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS activity_unread_idx
+  ON activity (viewer_pubkey, read_at);
+`;
+
 async function addColumnIfMissing(
   db: SQLite.SQLiteDatabase,
   table: string,
@@ -341,6 +366,9 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
   }
   if (current < 9) {
     await db.execAsync(MIGRATION_9_INDEXES);
+  }
+  if (current < 10) {
+    await db.execAsync(MIGRATION_10_TABLES);
   }
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }

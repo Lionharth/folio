@@ -79,6 +79,34 @@ export interface Vlog {
 
 export type ReactionTargetType = 'vlog' | 'comment';
 
+export type ActivityKind =
+  | 'comment'
+  | 'reply'
+  | 'reaction'
+  | 'invite'
+  | 'member-joined'
+  | 'member-removed';
+
+export interface Activity {
+  id: string;
+  viewerPubkey: string;
+  kind: ActivityKind;
+  actorPubkey: string;
+  circleId?: string | null;
+  circleName?: string | null;
+  remoteVlogId?: string | null;
+  localVlogId?: string | null;
+  vlogTitle?: string | null;
+  commentId?: string | null;
+  targetCommentId?: string | null;
+  targetType?: ReactionTargetType | null;
+  emoji?: string | null;
+  inviteId?: string | null;
+  createdAt: number;
+  receivedAt: number;
+  readAt?: number | null;
+}
+
 export interface Comment {
   id: string;
   remoteVlogId: string;

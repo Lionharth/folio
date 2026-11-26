@@ -8,6 +8,7 @@ import {
 } from '../src/lib/notifications/copy';
 import {
   circlesNotificationUrl,
+  commentsNotificationUrl,
   resolveNotificationRoute,
   updatesNotificationUrl,
   vlogNotificationUrl,
@@ -18,12 +19,13 @@ const preferences: NotificationPreferences = {
   posts: true,
   invites: true,
   membership: true,
+  activity: true,
 };
 
 const names = { alice: 'Alice', bob: 'Bob', carol: 'Carol' };
 
 function events(overrides: Partial<InboxNotificationEvents> = {}): InboxNotificationEvents {
-  return { moments: [], invites: [], membership: [], ...overrides };
+  return { moments: [], invites: [], membership: [], social: [], ...overrides };
 }
 
 test('moments are grouped per circle and ordered by circle name', () => {
@@ -70,7 +72,7 @@ test('grouped copy uses plural others and encodes the circle id', () => {
   assert.equal(request.data.url, '/updates?circleId=c%201');
 });
 
-test('muted circles suppress posts but not invitations or membership', () => {
+test('muted circles suppress posts, invitations, and membership', () => {
   const requests = buildInboxNotifications({
     events: events({
       moments: [{ vlogId: 'm1', circleId: 'c1', circleName: 'Muted', authorPubkey: 'alice' }],
@@ -87,9 +89,7 @@ test('muted circles suppress posts but not invitations or membership', () => {
     viewerPubkey: 'viewer',
   });
 
-  assert.equal(requests.some((request) => request.channel === 'moments'), false);
-  assert.equal(requests.some((request) => request.title === 'Invitation to Muted'), true);
-  assert.equal(requests.some((request) => request.title === 'Carol joined Muted'), true);
+  assert.equal(requests.length, 0);
 });
 
 test('self-authored moments are filtered defensively', () => {
@@ -179,10 +179,22 @@ test('notification URLs round-trip through the shared router', () => {
   assert.deepEqual(resolveNotificationRoute(vlogNotificationUrl(vlogId), viewer), {
     kind: 'vlog',
     vlogId,
+    comments: false,
   });
   assert.deepEqual(resolveNotificationRoute(`/vlog/${vlogId}/`, viewer), {
     kind: 'vlog',
     vlogId,
+    comments: false,
+  });
+  assert.deepEqual(resolveNotificationRoute(commentsNotificationUrl(vlogId), viewer), {
+    kind: 'vlog',
+    vlogId,
+    comments: true,
+  });
+  assert.deepEqual(resolveNotificationRoute(`/vlog/${vlogId}?comments=0`, viewer), {
+    kind: 'vlog',
+    vlogId,
+    comments: false,
   });
   assert.deepEqual(resolveNotificationRoute(updatesNotificationUrl('c 1'), viewer), {
     kind: 'updates',
@@ -196,6 +208,112 @@ test('notification URLs round-trip through the shared router', () => {
   assert.equal(resolveNotificationRoute('/vlog/other-prefix-1', viewer), null);
   assert.equal(resolveNotificationRoute('https://example.com/vlog/x', viewer), null);
   assert.equal(resolveNotificationRoute('/unknown', viewer), null);
+});
+
+test('social activity uses reply, comment, and reaction copy with comment routing', () => {
+  const requests = buildInboxNotifications({
+    events: events({
+      social: [
+        {
+          vlogId: 'w1',
+          circleId: 'c1',
+          circleName: 'Studio',
+          actorPubkey: 'alice',
+          kind: 'reply',
+        },
+        {
+          vlogId: 'w2',
+          circleId: 'c1',
+          circleName: 'Studio',
+          actorPubkey: 'bob',
+          kind: 'comment',
+        },
+        {
+          vlogId: 'w3',
+          circleId: 'c1',
+          circleName: 'Studio',
+          actorPubkey: 'carol',
+          kind: 'reaction',
+          targetType: 'comment',
+          emoji: '\u2764\ufe0f',
+        },
+      ],
+    }),
+    preferences,
+    mutedCircleIds: [],
+    names,
+    viewerPubkey: 'viewer',
+  });
+
+  assert.deepEqual(
+    requests.map((request) => [request.channel, request.title, request.body, request.data.url]),
+    [
+      ['social', 'Alice replied to you', 'In Studio.', '/vlog/w1?comments=1'],
+      ['social', 'Bob commented on your moment', 'In Studio.', '/vlog/w2?comments=1'],
+      ['social', 'Carol reacted \u2764\ufe0f', 'To your comment in Studio.', '/vlog/w3?comments=1'],
+    ]
+  );
+});
+
+test('multiple social events on one moment are grouped', () => {
+  const [request] = buildInboxNotifications({
+    events: events({
+      social: [
+        { vlogId: 'w1', circleId: 'c1', circleName: 'Studio', actorPubkey: 'alice', kind: 'reply' },
+        { vlogId: 'w1', circleId: 'c1', circleName: 'Studio', actorPubkey: 'bob', kind: 'comment' },
+      ],
+    }),
+    preferences,
+    mutedCircleIds: [],
+    names,
+    viewerPubkey: 'viewer',
+  });
+
+  assert.equal(request.title, '2 new responses');
+  assert.equal(request.body, 'In Studio.');
+  assert.equal(request.data.url, '/vlog/w1?comments=1');
+});
+
+test('full circle mute suppresses every event family', () => {
+  const source = events({
+    moments: [{ vlogId: 'm1', circleId: 'c1', circleName: 'Muted', authorPubkey: 'alice' }],
+    invites: [{ inviteId: 'i1', circleId: 'c1', circleName: 'Muted', ownerPubkey: 'bob', ownerName: 'Bob' }],
+    membership: [
+      { circleId: 'c1', circleName: 'Muted', kind: 'accepted', memberPubkey: 'carol', memberName: 'Carol' },
+    ],
+    social: [
+      { vlogId: 'w1', circleId: 'c1', circleName: 'Muted', actorPubkey: 'alice', kind: 'reply' },
+    ],
+  });
+
+  const requests = buildInboxNotifications({
+    events: source,
+    preferences,
+    mutedCircleIds: new Set(['c1']),
+    names,
+    viewerPubkey: 'viewer',
+  });
+  assert.equal(requests.length, 0);
+});
+
+test('activity preference gates only social events', () => {
+  const source = events({
+    invites: [{ inviteId: 'i1', circleId: 'c2', circleName: 'Two', ownerPubkey: 'bob', ownerName: 'Bob' }],
+    social: [
+      { vlogId: 'w1', circleId: 'c1', circleName: 'One', actorPubkey: 'alice', kind: 'reply' },
+    ],
+  });
+
+  const requests = buildInboxNotifications({
+    events: source,
+    preferences: { ...preferences, activity: false },
+    mutedCircleIds: [],
+    names,
+    viewerPubkey: 'viewer',
+  });
+
+  assert.equal(requests.some((request) => request.channel === 'social'), false);
+  assert.equal(requests.some((request) => request.title === 'Invitation to Two'), true);
 });
 
 test('missing names and circle names fall back honestly', () => {

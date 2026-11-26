@@ -4,7 +4,7 @@
  */
 
 export type NotificationRoute =
-  | { kind: 'vlog'; vlogId: string }
+  | { kind: 'vlog'; vlogId: string; comments: boolean }
   | { kind: 'updates'; circleId?: string }
   | { kind: 'circles' };
 
@@ -14,6 +14,10 @@ export const CIRCLES_PATH = '/circles';
 
 export function vlogNotificationUrl(vlogId: string): string {
   return `${VLOG_PATH}${vlogId}`;
+}
+
+export function commentsNotificationUrl(vlogId: string): string {
+  return `${VLOG_PATH}${vlogId}?comments=1`;
 }
 
 export function updatesNotificationUrl(circleId: string): string {
@@ -45,6 +49,16 @@ function updatesCircleId(query: string): string | undefined {
   return undefined;
 }
 
+function commentsRequested(query: string): boolean {
+  if (!query) return false;
+  for (const part of query.split('&')) {
+    const separator = part.indexOf('=');
+    if (separator < 0) continue;
+    if (part.slice(0, separator) === 'comments' && part.slice(separator + 1) === '1') return true;
+  }
+  return false;
+}
+
 export function resolveNotificationRoute(
   url: string,
   viewerPubkey: string
@@ -61,7 +75,7 @@ export function resolveNotificationRoute(
     const vlogId = decode(normalizedPath.slice(VLOG_PATH.length));
     if (!vlogId || vlogId.includes('/')) return null;
     if (!vlogId.startsWith(`${viewerPubkey.slice(0, 10)}-`)) return null;
-    return { kind: 'vlog', vlogId };
+    return { kind: 'vlog', vlogId, comments: commentsRequested(query) };
   }
 
   if (normalizedPath === UPDATES_PATH) {

@@ -46,6 +46,10 @@ Blossom servers store opaque ciphertext.
 - `/qr` and `/scan` are root Stack routes opened from Profile. The QR payload is
   the plain identity npub; scanning only feeds the existing owner-only
   `inviteMember` flow after filtering to circles the viewer owns.
+- `/inbox` is a root Stack route opened by the bell in the Updates header. It
+  lists replies, comments, reactions, invitations and membership changes. Tapping
+  a social row opens `/vlog/[id]?comments=1` with the conversation expanded;
+  circle rows open Circles.
 - `src/lib/queryKeys.ts` owns identity-aware keys and invalidation. Updates,
   Archive, circle feeds and vlog detail share one vlog root. Publish, sync,
   read and favourite writes therefore cannot leave independent stale lists.
@@ -87,15 +91,16 @@ UI only ever shows a display name and a shortened npub.
 `settings`, `relays`, `media_providers`, `circles`, `circle_members`, `vlogs`,
 `clips`, `drafts`, `draft_clips`, `upload_jobs`, `favourites`, `circle_invites`,
 `contact_profiles`, `circle_memberships`, `control_outbox`, `comments`,
-`reactions`, `inbox_sync_state`, `inbox_relay_state`.
+`reactions`, `activity`, `inbox_sync_state`, `inbox_relay_state`.
 
 Migrations use `PRAGMA user_version`; schema version 2 adds
 `vlogs.viewer_pubkey`, version 3 adds `circle_invites`, version 4 adds
 `contact_profiles` and the private name fields on invitations, version 6 scopes
 invitations to a recipient and adds durable membership receipts plus the control
 outbox, version 7 adds encrypted comments, reactions and the inbox cursor,
-version 8 adds per-relay sync state and the remote-vlog lookup index, and version
-9 adds the unread-count index used by the Updates tab badge.
+version 8 adds per-relay sync state and the remote-vlog lookup index, version 9
+adds the unread-count index used by the Updates tab badge, and version 10 adds
+the local `activity` table used by the Inbox.
 
 Design choices:
 - Every vlog row belongs to a viewer identity (`viewer_pubkey`). Local ids are
@@ -210,6 +215,33 @@ ids and comment targets. Names are learned in timestamp order after a sync, not
 in the newest-first processing order, so a historical backfill cannot revert a
 contact to an older name.
 
+## Inbox activity
+
+`src/lib/database/activity.ts` stores local, identity-scoped rows for replies,
+comments on the viewer's moments, reactions to the viewer's moments/comments,
+invitations and owner-driven membership changes. Rows are created while applying
+received controls, not derived on read, so each row has a stable id and read
+state.
+
+- Social activity is new-only: it is recorded when a social control newly applies
+  and `inbox_sync_state.last_sync_at` already exists. The initial backfill never
+  floods the Inbox with historical comments or reactions.
+- Deterministic ids (`comment:<id>`, `reaction:<target>:<emoji>:<actor>` and so
+  on) make overlapping sync windows idempotent. Comment deletes and reaction
+  removals delete their activity row; edits do not add a row.
+- Self-authored controls never create activity because the sender is included in
+  their own social fanout.
+- `listActivity` joins the local vlog and circle, filters muted circles and hides
+  activity from circles where the viewer is no longer active, except pending
+  invitations and the removal row itself.
+- Opening Inbox marks all unread rows read. The bell badge uses
+  `countUnreadActivity`; the Updates tab badge remains the unread moment count.
+- Each identity keeps at most 200 rows, pruned at the end of sync. The Inbox
+  paginates 30 rows per page.
+- Per-circle mute is now a full mute: it suppresses moment, invitation,
+  membership and social alerts and hides activity from that circle while muted.
+  Content remains visible in Updates and Circles.
+
 ## Receive flow (`src/services/inbox.ts`, `src/services/playback.ts`)
 
 1. Query `kind: 1059` gift wraps addressed to the identity, with NIP-42 AUTH.
@@ -260,15 +292,21 @@ token or notification-specific relay payload.
 - Only the active identity is synced and notified. The background worker reads
   the active identity on every run.
 - Device-level preferences live in `settings` under `notifications.*`: a master
-  switch plus New moments, Invitations and Membership toggles. Effective
-  notifications require both the master setting and OS permission.
-- Per-circle mute reuses `circles.muted`. It suppresses post notifications for
-  that circle; invitations and membership changes still notify.
-- Events are derived from DB transitions, so repeated syncs do not re-notify.
-  Self-authored moments are filtered defensively.
-- The icon badge shows the unread moment count after a background check and is
-  cleared when the app becomes active. The Updates tab badge reads directly from
-  the unread rows and does not depend on notification permission.
+  switch plus New moments, Replies and reactions, Invitations and Membership
+  toggles. Effective notifications require both the master setting and OS
+  permission.
+- Social notification events come from activity rows created during the sync.
+  A single event gets action-specific copy; multiple events on one moment are
+  grouped as `N new responses` and route to the expanded conversation.
+- Per-circle mute reuses `circles.muted`. It is a full mute: moment, invitation,
+  membership and social notifications for that circle are suppressed, and its
+  activity is hidden from the Inbox while muted.
+- Events are derived from durable transitions, so repeated syncs do not
+  re-notify. Self-authored moments and social controls are filtered defensively.
+- The icon badge shows unread moments plus unread activity after a background
+  check and is cleared when the app becomes active. The Updates tab badge reads
+  the unread moment count directly; the bell badge reads unread activity. Neither
+  depends on notification permission.
 - Foreground syncs stay silent: the notification handler suppresses banners,
   list entries and sounds while Updates, the unread count and the tab badge still
   update.
@@ -276,7 +314,8 @@ token or notification-specific relay payload.
   TTL-based JSON value in `settings`, so a killed process cannot deadlock the
   next launch.
 - Notification content carries only a routing URL. Circle and author names are
-  still visible on the lock screen and in notification history; that trade-off is
+  still visible on the lock screen and in notification history; comment bodies
+  are never included, and reactions show only the emoji symbol. That trade-off is
   documented in SECURITY.md.
 - On iOS, a locked keychain can prevent a background run from reading the secret
   key. The run skips and catches up later.

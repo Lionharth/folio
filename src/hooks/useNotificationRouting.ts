@@ -38,7 +38,13 @@ export function useNotificationRouting(ready: boolean): void {
       const route = resolveNotificationRoute(url, active.pubkey);
       if (route) {
         if (route.kind === 'vlog') {
-          router.push({ pathname: '/vlog/[id]', params: { id: route.vlogId } });
+          router.push({
+            pathname: '/vlog/[id]',
+            params: {
+              id: route.vlogId,
+              ...(route.comments ? { comments: '1' } : {}),
+            },
+          });
         } else if (route.kind === 'updates') {
           router.navigate({
             pathname: '/(tabs)/updates',

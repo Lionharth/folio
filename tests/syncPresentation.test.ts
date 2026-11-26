@@ -16,7 +16,7 @@ function result(overrides: Partial<InboxRefreshResult> = {}): InboxRefreshResult
     anyRelaySucceeded: true,
     allRelaysComplete: true,
     completedAt: 1,
-    events: { moments: [], invites: [], membership: [] },
+    events: { moments: [], invites: [], membership: [], social: [] },
     ...overrides,
   };
 }

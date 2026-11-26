@@ -1,6 +1,12 @@
 import { getPublicKey } from 'nostr-tools/pure';
 import { randomUUID } from 'expo-crypto';
 
+import {
+  recordCommentActivity,
+  recordReactionActivity,
+  removeCommentActivity,
+  removeReactionActivity,
+} from '../lib/database/activity';
 import { upsertContactName } from '../lib/database/contacts';
 import { applyCommentOp, getComment } from '../lib/database/comments';
 import { getDatabase } from '../lib/database/db';
@@ -29,7 +35,7 @@ import {
   normalizeEmoji,
   normalizeSocialName,
 } from '../lib/social/rules';
-import type { Circle, CircleMember, Comment, Vlog } from '../types/models';
+import type { Activity, Circle, CircleMember, Comment, Vlog } from '../types/models';
 
 export class SocialError extends Error {
   constructor(message: string) {
@@ -41,7 +47,7 @@ export class SocialError extends Error {
 export interface SocialValidationCache {
   circles: Map<string, Circle | null>;
   members: Map<string, CircleMember | null>;
-  vlogs: Map<string, { id: string; circleId: string | null } | null>;
+  vlogs: Map<string, { id: string; circleId: string | null; authorPubkey: string } | null>;
   comments: Map<string, Comment | null>;
 }
 
@@ -80,7 +86,7 @@ async function cachedVlog(
   cache: SocialValidationCache | undefined,
   viewerPubkey: string,
   remoteId: string
-): Promise<{ id: string; circleId: string | null } | null> {
+): Promise<{ id: string; circleId: string | null; authorPubkey: string } | null> {
   const key = `${viewerPubkey}:${remoteId}`;
   if (cache?.vlogs.has(key)) return cache.vlogs.get(key) ?? null;
   const vlog = await getVlogCircleByRemoteId(viewerPubkey, remoteId);
@@ -420,6 +426,7 @@ export async function setReaction(input: {
 export interface SocialApplyResult {
   applied: boolean;
   type: 'comment' | 'reaction';
+  activity: Activity | null;
 }
 
 export async function applySocialControl(input: {
@@ -427,10 +434,11 @@ export async function applySocialControl(input: {
   senderPubkey: string;
   payload: SocialControlPayload;
   cache?: SocialValidationCache;
+  recordActivity?: boolean;
 }): Promise<SocialApplyResult> {
-  const { viewerPubkey, senderPubkey, payload, cache } = input;
+  const { viewerPubkey, senderPubkey, payload, cache, recordActivity = false } = input;
   const kind: SocialApplyResult['type'] = payload.type === 'circle-comment' ? 'comment' : 'reaction';
-  const rejected = (): SocialApplyResult => ({ applied: false, type: kind });
+  const rejected = (): SocialApplyResult => ({ applied: false, type: kind, activity: null });
 
   const circle = await cachedCircle(cache, payload.circleId);
   if (!circle) return rejected();
@@ -443,27 +451,113 @@ export async function applySocialControl(input: {
   const vlog = await cachedVlog(cache, viewerPubkey, payload.vlogId);
   if (vlog && vlog.circleId !== payload.circleId) return rejected();
 
+  const db = await getDatabase();
+
   if (payload.type === 'circle-comment') {
-    if (payload.action === 'create' && payload.replyToId) {
-      const target = await cachedComment(cache, viewerPubkey, payload.replyToId);
-      if (target && (target.remoteVlogId !== payload.vlogId || target.circleId !== payload.circleId)) {
-        return rejected();
-      }
+    const replyTarget =
+      payload.action === 'create' && payload.replyToId
+        ? await cachedComment(cache, viewerPubkey, payload.replyToId)
+        : null;
+    if (
+      replyTarget &&
+      (replyTarget.remoteVlogId !== payload.vlogId || replyTarget.circleId !== payload.circleId)
+    ) {
+      return rejected();
     }
-    const result = await applyCommentOp(viewerPubkey, senderPubkey, payload);
-    if (result.applied) invalidateCachedComment(cache, viewerPubkey, payload.commentId);
-    return { applied: result.applied, type: 'comment' };
+
+    let applied = false;
+    let activity: Activity | null = null;
+    const shouldRecord = recordActivity && senderPubkey !== viewerPubkey;
+    if (!shouldRecord) {
+      const result = await applyCommentOp(viewerPubkey, senderPubkey, payload);
+      applied = result.applied;
+      if (applied) invalidateCachedComment(cache, viewerPubkey, payload.commentId);
+      return { applied, type: 'comment', activity: null };
+    }
+
+    await db.withTransactionAsync(async () => {
+      const result = await applyCommentOp(viewerPubkey, senderPubkey, payload);
+      applied = result.applied;
+      if (!applied) return;
+      invalidateCachedComment(cache, viewerPubkey, payload.commentId);
+
+      if (payload.action === 'create') {
+        const activityKind =
+          replyTarget?.authorPubkey === viewerPubkey
+            ? 'reply'
+            : vlog?.authorPubkey === viewerPubkey
+              ? 'comment'
+              : null;
+        if (!activityKind) return;
+        activity = await recordCommentActivity({
+          viewerPubkey,
+          actorPubkey: senderPubkey,
+          kind: activityKind,
+          circleId: payload.circleId,
+          remoteVlogId: payload.vlogId,
+          localVlogId: vlog?.id ?? null,
+          commentId: payload.commentId,
+          targetCommentId: payload.replyToId ?? null,
+          createdAt: payload.at,
+        });
+      } else if (payload.action === 'delete') {
+        await removeCommentActivity(viewerPubkey, payload.commentId);
+      }
+    });
+    return { applied, type: 'comment', activity };
   }
 
-  if (payload.targetType === 'comment') {
-    const target = await cachedComment(cache, viewerPubkey, payload.targetId);
-    if (target) {
-      if (target.remoteVlogId !== payload.vlogId || target.circleId !== payload.circleId) {
-        return rejected();
-      }
-      if (payload.active && target.deletedAt) return rejected();
+  const reactionTarget =
+    payload.targetType === 'comment'
+      ? await cachedComment(cache, viewerPubkey, payload.targetId)
+      : null;
+  if (reactionTarget) {
+    if (reactionTarget.remoteVlogId !== payload.vlogId || reactionTarget.circleId !== payload.circleId) {
+      return rejected();
     }
+    if (payload.active && reactionTarget.deletedAt) return rejected();
   }
-  const applied = await applyReactionOp(viewerPubkey, senderPubkey, payload);
-  return { applied, type: 'reaction' };
+
+  let applied = false;
+  let activity: Activity | null = null;
+  const shouldRecord = recordActivity && senderPubkey !== viewerPubkey;
+  if (!shouldRecord) {
+    applied = await applyReactionOp(viewerPubkey, senderPubkey, payload);
+    return { applied, type: 'reaction', activity: null };
+  }
+
+  await db.withTransactionAsync(async () => {
+    applied = await applyReactionOp(viewerPubkey, senderPubkey, payload);
+    if (!applied) return;
+
+    if (!payload.active) {
+      await removeReactionActivity(
+        viewerPubkey,
+        payload.targetType,
+        payload.targetId,
+        senderPubkey,
+        payload.emoji
+      );
+      return;
+    }
+
+    const isMine =
+      payload.targetType === 'vlog'
+        ? vlog?.authorPubkey === viewerPubkey
+        : reactionTarget?.authorPubkey === viewerPubkey;
+    if (!isMine) return;
+
+    activity = await recordReactionActivity({
+      viewerPubkey,
+      actorPubkey: senderPubkey,
+      circleId: payload.circleId,
+      remoteVlogId: payload.vlogId,
+      localVlogId: vlog?.id ?? null,
+      targetType: payload.targetType,
+      targetId: payload.targetId,
+      emoji: payload.emoji,
+      createdAt: payload.at,
+    });
+  });
+  return { applied, type: 'reaction', activity };
 }

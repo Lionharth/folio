@@ -223,7 +223,7 @@ export default function ProfileScreen() {
         <View style={{ paddingHorizontal: theme.spacing.lg }}>
           <ListRow
             title="Notifications"
-            subtitle="New moments, invitations, muted circles"
+            subtitle="Moments, replies, invitations, muted circles"
             right={<Feather name="chevron-right" size={18} color={theme.colors.textTertiary} />}
             onPress={() => router.push('/notifications')}
             showDivider={false}

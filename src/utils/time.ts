@@ -1,3 +1,8 @@
+/** Normalizes a timestamp that may be seconds or milliseconds to milliseconds. */
+export function toMillis(value: number): number {
+  return value > 1e12 ? value : value * 1000;
+}
+
 export function formatRelativeTime(seconds: number, now = Date.now()): string {
   const timestamp = seconds > 1e12 ? seconds : seconds * 1000;
   const diff = Math.max(0, now - timestamp);

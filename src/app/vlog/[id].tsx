@@ -56,16 +56,21 @@ import type { Reaction } from '../../types/models';
 import { formatBytes, formatDate, formatDuration } from '../../utils/time';
 
 export default function VlogScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, comments } = useLocalSearchParams<{ id: string; comments?: string }>();
+  const expandComments = comments === '1';
   return (
     <ThemeScope scheme="dark">
       <StatusBar style="light" />
-      <VlogContent key={id} id={id} />
+      <VlogContent
+        key={`${id}:${expandComments ? 'comments' : 'viewer'}`}
+        id={id}
+        expandComments={expandComments}
+      />
     </ThemeScope>
   );
 }
 
-function VlogContent({ id }: { id: string }) {
+function VlogContent({ id, expandComments }: { id: string; expandComments: boolean }) {
   const theme = useTheme();
   const queryClient = useQueryClient();
   const identity = useSession((state) => state.identity);
@@ -86,7 +91,7 @@ function VlogContent({ id }: { id: string }) {
   const [socialError, setSocialError] = useState<string | null>(null);
   const [savingFavourite, setSavingFavourite] = useState(false);
   const [showClipDetails, setShowClipDetails] = useState(false);
-  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const [sheetExpanded, setSheetExpanded] = useState(expandComments);
   const inFlight = useRef<Set<string>>(new Set());
   const mounted = useRef(true);
   const sheetScroll = useRef<ScrollViewInstance>(null);
@@ -102,8 +107,8 @@ function VlogContent({ id }: { id: string }) {
   );
   const sheetMaxHeight = Math.max(collapsedHeight, availableHeight - expandedPlayerHeight);
   const sheetTravel = Math.max(1, sheetMaxHeight - collapsedHeight);
-  const [sheetProgress] = useState(() => new Animated.Value(0));
-  const [dockProgress] = useState(() => new Animated.Value(0));
+  const [sheetProgress] = useState(() => new Animated.Value(expandComments ? 1 : 0));
+  const [dockProgress] = useState(() => new Animated.Value(expandComments ? 1 : 0));
   const [entrance] = useState(() => new Animated.Value(0));
 
   const vlogQuery = useQuery({

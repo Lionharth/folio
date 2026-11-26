@@ -4,6 +4,7 @@
  */
 import {
   circlesNotificationUrl,
+  commentsNotificationUrl,
   updatesNotificationUrl,
   vlogNotificationUrl,
 } from './routes';
@@ -13,6 +14,7 @@ export interface NotificationPreferences {
   posts: boolean;
   invites: boolean;
   membership: boolean;
+  activity: boolean;
 }
 
 export interface InboxMomentEvent {
@@ -39,14 +41,25 @@ export interface InboxMembershipEvent {
   memberName: string | null;
 }
 
+export interface InboxSocialEvent {
+  vlogId: string;
+  circleId: string;
+  circleName: string | null;
+  actorPubkey: string;
+  kind: 'comment' | 'reply' | 'reaction';
+  targetType?: 'vlog' | 'comment';
+  emoji?: string | null;
+}
+
 export interface InboxNotificationEvents {
   moments: InboxMomentEvent[];
   invites: InboxInviteEvent[];
   membership: InboxMembershipEvent[];
+  social: InboxSocialEvent[];
 }
 
 export interface NotificationRequest {
-  channel: 'moments' | 'circles';
+  channel: 'moments' | 'circles' | 'social';
   title: string;
   body: string;
   data: { url: string };
@@ -136,6 +149,7 @@ export function buildInboxNotifications({
 
   if (preferences.invites) {
     for (const event of events.invites) {
+      if (muted.has(event.circleId)) continue;
       const name = circleName(event.circleName);
       const owner = personName(event.ownerPubkey, event.ownerName, names);
       requests.push({
@@ -149,6 +163,7 @@ export function buildInboxNotifications({
 
   if (preferences.membership) {
     for (const event of events.membership) {
+      if (muted.has(event.circleId)) continue;
       const name = circleName(event.circleName);
       const member = personName(event.memberPubkey, event.memberName, names);
       requests.push(
@@ -166,6 +181,66 @@ export function buildInboxNotifications({
               data: { url: circlesNotificationUrl() },
             }
       );
+    }
+  }
+
+  if (preferences.activity) {
+    const groups = new Map<string, InboxSocialEvent[]>();
+    for (const event of events.social) {
+      if (event.actorPubkey === viewerPubkey) continue;
+      if (muted.has(event.circleId)) continue;
+      const list = groups.get(event.vlogId) ?? [];
+      list.push(event);
+      groups.set(event.vlogId, list);
+    }
+
+    const ordered = [...groups.entries()].sort((left, right) => {
+      const leftName = circleName(left[1][0]?.circleName);
+      const rightName = circleName(right[1][0]?.circleName);
+      if (leftName !== rightName) return leftName.localeCompare(rightName);
+      return left[0].localeCompare(right[0]);
+    });
+
+    for (const [vlogId, responses] of ordered) {
+      const name = circleName(responses[0]?.circleName);
+      if (responses.length > 1) {
+        requests.push({
+          channel: 'social',
+          title: `${responses.length} new responses`,
+          body: `In ${name}.`,
+          data: { url: commentsNotificationUrl(vlogId) },
+        });
+        continue;
+      }
+
+      const event = responses[0];
+      const actor = personName(event.actorPubkey, null, names);
+      if (event.kind === 'reply') {
+        requests.push({
+          channel: 'social',
+          title: `${actor} replied to you`,
+          body: `In ${name}.`,
+          data: { url: commentsNotificationUrl(vlogId) },
+        });
+      } else if (event.kind === 'comment') {
+        requests.push({
+          channel: 'social',
+          title: `${actor} commented on your moment`,
+          body: `In ${name}.`,
+          data: { url: commentsNotificationUrl(vlogId) },
+        });
+      } else {
+        const emoji = clean(event.emoji);
+        requests.push({
+          channel: 'social',
+          title: emoji ? `${actor} reacted ${emoji}` : `${actor} reacted`,
+          body:
+            event.targetType === 'comment'
+              ? `To your comment in ${name}.`
+              : `To your moment in ${name}.`,
+          data: { url: commentsNotificationUrl(vlogId) },
+        });
+      }
     }
   }
 
