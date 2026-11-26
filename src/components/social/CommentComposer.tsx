@@ -17,6 +17,8 @@ export interface CommentComposerProps {
   disabled?: boolean;
   onSubmit: (value: string) => Promise<boolean> | boolean;
   onCancel?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
 }
 
 export function CommentComposer({
@@ -27,6 +29,8 @@ export function CommentComposer({
   disabled = false,
   onSubmit,
   onCancel,
+  onFocus,
+  onBlur,
 }: CommentComposerProps) {
   const theme = useTheme();
   const [value, setValue] = useState(initialValue);
@@ -64,6 +68,8 @@ export function CommentComposer({
         multiline
         maxLength={MAX_COMMENT_LENGTH}
         editable={!disabled && !submitting}
+        onFocus={onFocus}
+        onBlur={onBlur}
       />
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <View style={{ flex: 1 }}>

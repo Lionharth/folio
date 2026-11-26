@@ -4,6 +4,7 @@ import {
   Alert,
   BackHandler,
   Easing,
+  Keyboard,
   KeyboardAvoidingView,
   PanResponder,
   Platform,
@@ -92,6 +93,8 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
   const [savingFavourite, setSavingFavourite] = useState(false);
   const [showClipDetails, setShowClipDetails] = useState(false);
   const [sheetExpanded, setSheetExpanded] = useState(expandComments);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [composerActive, setComposerActive] = useState(false);
   const inFlight = useRef<Set<string>>(new Set());
   const mounted = useRef(true);
   const sheetScroll = useRef<ScrollViewInstance>(null);
@@ -225,6 +228,33 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
     settleSheet(sheetExpanded);
   }, [settleSheet, sheetExpanded]);
 
+  const scrollComposerIntoView = useCallback(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        sheetScroll.current?.scrollToEnd({ animated: !reducedMotion });
+      });
+    });
+  }, [reducedMotion]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setKeyboardHeight(0);
+    });
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (composerActive && keyboardHeight > 0) scrollComposerIntoView();
+  }, [composerActive, keyboardHeight, scrollComposerIntoView]);
+
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (!sheetExpanded) return false;
@@ -330,13 +360,15 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
 
   const refreshSocial = () => (identity ? invalidateSocial(queryClient, identity.pubkey) : Promise.resolve());
   const cancelComposer = () => {
+    setComposerActive(false);
     setComposerMode('create');
     setComposerTarget(null);
   };
 
   const focusComposer = () => {
+    setComposerActive(true);
     setSheetExpanded(true);
-    setTimeout(() => sheetScroll.current?.scrollToEnd({ animated: !reducedMotion }), reducedMotion ? 0 : theme.motion.enter);
+    scrollComposerIntoView();
   };
 
   const startReply = (comment: ThreadedComment) => {
@@ -578,7 +610,7 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
           position: 'absolute',
           left: 0,
           right: 0,
-          bottom: 0,
+          bottom: composerActive ? keyboardHeight : 0,
           height: sheetMaxHeight,
           backgroundColor: '#151515',
           borderTopLeftRadius: theme.radius.xl,
@@ -626,7 +658,12 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
           showsVerticalScrollIndicator={false}
           pointerEvents={sheetExpanded ? 'auto' : 'none'}
           importantForAccessibility={sheetExpanded ? 'auto' : 'no-hide-descendants'}
-          contentContainerStyle={{ paddingHorizontal: theme.spacing.xl, paddingBottom: insets.bottom + theme.spacing.giant, gap: theme.spacing.lg }}
+          contentContainerStyle={{
+            paddingHorizontal: theme.spacing.xl,
+            paddingBottom:
+              composerActive && keyboardHeight > 0 ? theme.spacing.lg : insets.bottom + theme.spacing.giant,
+            gap: theme.spacing.lg,
+          }}
         >
           {vlog.description ? <AppText variant="body" color="textSecondary">{vlog.description}</AppText> : null}
           {offline ? <InlineNotice message="Offline · comments send later" tone="warning" /> : null}
@@ -682,6 +719,13 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
               submitting={submitting}
               onSubmit={submitComment}
               onCancel={composerMode === 'create' ? undefined : cancelComposer}
+              onFocus={() => {
+                setComposerActive(true);
+                scrollComposerIntoView();
+              }}
+              onBlur={() => {
+                setComposerActive(false);
+              }}
             />
           ) : (
             <AppText variant="caption" color="textSecondary">Comments closed for you.</AppText>

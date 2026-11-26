@@ -125,6 +125,9 @@
 
 ### Fixed
 
+- The reply/edit composer in the moment viewer now stays above the keyboard;
+  the conversation sheet lifts with the keyboard and scrolls the focused
+  composer into view.
 - Inbox results now expose relay reachability and completion. All-relays-offline
   or partial sync can no longer display a false "up to date" or "no invitations"
   success state; reconnect retries use NetInfo without a failure loop.
