@@ -8,6 +8,8 @@ type FeatherIcon = React.ComponentProps<typeof Feather>['name'];
 
 export function IconButton({
   icon,
+  glyph,
+  shape = 'circle',
   label,
   loading = false,
   disabled = false,
@@ -17,7 +19,9 @@ export function IconButton({
   accessibilityState,
   ...props
 }: Omit<PressableProps, 'children' | 'style'> & {
-  icon: FeatherIcon;
+  icon?: FeatherIcon;
+  glyph?: React.ReactNode;
+  shape?: 'circle' | 'square';
   label: string;
   loading?: boolean;
   selected?: boolean;
@@ -27,6 +31,7 @@ export function IconButton({
   const theme = useTheme();
   const isDisabled = disabled || loading;
   const color = tone === 'danger' ? theme.colors.danger : tone === 'strong' ? theme.colors.textPrimary : theme.colors.textSecondary;
+  const square = shape === 'square';
 
   return (
     <Pressable
@@ -39,7 +44,9 @@ export function IconButton({
         {
           width: theme.layout.minTouchTarget,
           height: theme.layout.minTouchTarget,
-          borderRadius: theme.radius.pill,
+          borderRadius: square ? theme.radius.sm : theme.radius.pill,
+          borderWidth: square ? 1 : 0,
+          borderColor: theme.colors.borderStrong,
           alignItems: 'center',
           justifyContent: 'center',
           backgroundColor: selected ? theme.colors.surfaceSubtle : pressed ? theme.colors.surfaceSubtle : 'transparent',
@@ -49,7 +56,13 @@ export function IconButton({
       ]}
       {...props}
     >
-      {loading ? <ActivityIndicator size="small" color={color} /> : <Feather name={icon} size={21} color={color} />}
+      {loading ? (
+        <ActivityIndicator size="small" color={color} />
+      ) : glyph ? (
+        glyph
+      ) : icon ? (
+        <Feather name={icon} size={21} color={color} />
+      ) : null}
     </Pressable>
   );
 }

@@ -43,6 +43,9 @@ Blossom servers store opaque ciphertext.
 - JavaScript tabs contain Updates, Circles, Archive and Profile. The custom tab
   bar inserts a Create action; `/create`, `/capture` and `/vlog/[id]` are root
   Stack routes, so none leaves a tab bar underneath a full-screen flow.
+- `/qr` and `/scan` are root Stack routes opened from Profile. The QR payload is
+  the plain identity npub; scanning only feeds the existing owner-only
+  `inviteMember` flow after filtering to circles the viewer owns.
 - `src/lib/queryKeys.ts` owns identity-aware keys and invalidation. Updates,
   Archive, circle feeds and vlog detail share one vlog root. Publish, sync,
   read and favourite writes therefore cannot leave independent stale lists.

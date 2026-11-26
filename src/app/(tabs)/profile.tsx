@@ -3,6 +3,7 @@ import { Alert, Pressable, View } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
 import Feather from '@expo/vector-icons/Feather';
+import MaterialCommunityIcons from '@expo/vector-icons/MaterialCommunityIcons';
 
 import { AppText } from '../../components/ui/AppText';
 import { Avatar } from '../../components/ui/Avatar';
@@ -99,6 +100,20 @@ export default function ProfileScreen() {
           </View>
         </View>
         <Button label="Copy Folio ID" variant="secondary" fullWidth style={{ marginTop: theme.spacing.lg }} onPress={() => void copy(npub, 'Folio ID')} />
+        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: theme.spacing.sm, marginTop: theme.spacing.md }}>
+          <IconButton
+            shape="square"
+            glyph={<MaterialCommunityIcons name="qrcode" size={21} color={theme.colors.textSecondary} />}
+            label="Show Folio ID QR code"
+            onPress={() => router.push('/qr')}
+          />
+          <IconButton
+            shape="square"
+            icon="camera"
+            label="Scan a Folio ID"
+            onPress={() => router.push('/scan')}
+          />
+        </View>
       </Card>
 
       <SectionHeader title="Identities" />

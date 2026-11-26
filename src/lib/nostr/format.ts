@@ -15,6 +15,13 @@ export function pubkeyFromInput(value: string): string | null {
   return null;
 }
 
+/** Accepts a QR payload holding a raw npub or hex pubkey, optionally NIP-21 prefixed. */
+export function pubkeyFromQrPayload(data: string): string | null {
+  const trimmed = data.trim();
+  const value = trimmed.startsWith('nostr:') ? trimmed.slice('nostr:'.length) : trimmed;
+  return pubkeyFromInput(value);
+}
+
 export function shortNpub(pubkey: string): string {
   try {
     const npub = npubEncode(pubkey);

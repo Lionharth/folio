@@ -61,6 +61,8 @@ function RootStack() {
         <Stack.Screen name="vlog/[id]" options={{ animation: 'fade' }} />
         <Stack.Screen name="create" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="capture" options={{ animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="qr" options={{ animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="scan" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="circle/[id]" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="circle/new" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="identity/new" options={{ animation: 'slide_from_right' }} />

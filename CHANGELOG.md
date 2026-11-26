@@ -58,6 +58,10 @@
 
 ### Added
 
+- Profile can show the active identity's Folio ID as a QR code and open a
+  full-screen scanner. A scanned code is matched against circles the identity
+  owns and reuses the existing private invitation flow; circles where the person
+  already participates are hidden.
 - GitHub Actions now builds the arm64-v8a release APK when a `v*` tag is pushed
   and attaches it, with its SHA-256, to the matching GitHub Release.
 - A branded splash screen with the serif lowercase `folio` wordmark in light and

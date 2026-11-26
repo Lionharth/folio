@@ -15,7 +15,7 @@
       "infoPlist": {
         "NSPhotoLibraryUsageDescription": "Folio lets you import videos from your library into private circles.",
         "NSMicrophoneUsageDescription": "Folio records audio with the videos you capture.",
-        "NSCameraUsageDescription": "Folio records videos to share with your circles."
+        "NSCameraUsageDescription": "Folio records videos and scans Folio IDs to share with your circles."
       }
     },
     "android": {
@@ -70,7 +70,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Folio records videos to share with your circles.",
+          "cameraPermission": "Folio records videos and scans Folio IDs to share with your circles.",
           "microphonePermission": "Folio records audio with the videos you capture.",
           "recordAudioAndroid": true
         }

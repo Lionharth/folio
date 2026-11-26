@@ -109,6 +109,10 @@ Circle state is application-level. Invitations and acceptances travel as
 NIP-17 `kind: 14` rumors with a `folio-control` tag, so relays only see gift
 wraps. They are never public events.
 
+Sharing a Folio ID as a QR code carries only the plain NIP-19 `npub`; scanning
+it pre-fills the existing owner invite flow and changes no control event, table
+or payload. The private `circle-invite` below is still what reaches the invitee.
+
 Invitation:
 
 ```json
