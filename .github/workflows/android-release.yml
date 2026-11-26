@@ -1,0 +1,163 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (e.g. v0.1.1)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Build and verify without creating the GitHub Release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  NODE_OPTIONS: --max-old-space-size=4096
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run typecheck:node
+      - run: npm run lint
+      - run: npm test
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-37" "build-tools;37.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: npm ci
+
+      - name: Validate tag and version
+        id: meta
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          APP_VERSION=$(node -p "require('./app.json').expo.version")
+          VERSION_CODE=$(node -p "require('./app.json').expo.android.versionCode")
+          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
+          test "$VERSION" = "$APP_VERSION"
+          echo "$VERSION_CODE" | grep -Eq '^[0-9]+$'
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Prebuild Android project
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease -x lint -x test -PreactNativeArchitectures=arm64-v8a --console=plain -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+
+      - name: Verify and package APK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          AAPT2="$SDK/build-tools/37.0.0/aapt2"
+          APKSIGNER="$SDK/build-tools/37.0.0/apksigner"
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+
+          BADGING=$("$AAPT2" dump badging "$APK")
+          echo "$BADGING" | grep -q "package: name='life.folio.app'"
+          echo "$BADGING" | grep -q "versionCode='${{ steps.meta.outputs.version_code }}'"
+          echo "$BADGING" | grep -q "versionName='${{ steps.meta.outputs.version }}'"
+          echo "$BADGING" | grep -q "native-code: 'arm64-v8a'"
+
+          "$APKSIGNER" verify --print-certs "$APK" | tee /tmp/certs.txt
+          grep -qi "fac61745dc0903786fb9ede62a962b399f7348f0bb6f899b8332667591033b9c" /tmp/certs.txt
+
+          unzip -l "$APK" | grep -q "assets/index.android.bundle"
+
+          mkdir -p dist
+          NAME="folio-${{ steps.meta.outputs.version }}-release-arm64-v8a.apk"
+          cp "$APK" "dist/$NAME"
+          (cd dist && sha256sum "$NAME" > "$NAME.sha256")
+          HASH=$(cut -d' ' -f1 "dist/$NAME.sha256")
+          SIZE=$(du -h "dist/$NAME" | cut -f1)
+          COMMIT=$(git rev-parse --short HEAD)
+
+          cat > dist/release-body.md <<EOF
+          ### Android APK
+
+          - **File:** $NAME
+          - **SHA-256:** $HASH
+          - **Size:** $SIZE
+          - **ABI:** arm64-v8a
+          - **Built from:** $COMMIT
+          - **Signing:** debug keystore (installable; not Play Store upload-ready)
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: folio-${{ steps.meta.outputs.version }}-release-arm64-v8a
+          path: |
+            dist/*.apk
+            dist/*.sha256
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.dry_run }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Folio ${{ steps.meta.outputs.version }}
+          generate_release_notes: true
+          append_body: true
+          body_path: dist/release-body.md
+          files: |
+            dist/*.apk
+            dist/*.sha256
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(steps.meta.outputs.version, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

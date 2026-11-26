@@ -58,6 +58,8 @@
 
 ### Added
 
+- GitHub Actions now builds the arm64-v8a release APK when a `v*` tag is pushed
+  and attaches it, with its SHA-256, to the matching GitHub Release.
 - A branded splash screen with the serif lowercase `folio` wordmark in light and
   dark variants, plus a short fade into the first screen.
 - Device-local notifications for new moments, invitations and membership
