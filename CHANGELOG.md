@@ -63,8 +63,8 @@
   central full-screen Create action. Create and Capture no longer behave like
   tab destinations.
 - Updates is a finite, paginated unread inbox with a clear caught-up state.
-  Archive owns complete chronological history with incremental loading, month
-  groups, search, circle filters and a two-column memory grid.
+  Archive owns the identity's own published history with incremental loading,
+  month groups, search, circle filters and a two-column memory grid.
 - Vlog playback uses an always-dark cinema surface with player docking,
   sequential clip progress, and a draggable/keyboard/TalkBack-accessible lower
   layer for captions, reactions and threaded comments.
@@ -77,6 +77,12 @@
 - Identity setup keeps the best-effort NIP-17 inbox-relay announcement after
   creation and import. Recovery keys remain only in SecureStore; the resumable
   checkpoint stores a non-secret local marker.
+
+### Fixed
+
+- Archive now lists only moments you posted and no longer stays empty until a
+  filter is changed. It re-reads SQLite whenever the tab regains focus, and vlog
+  lists refresh when the app returns to the foreground.
 
 ### Added
 

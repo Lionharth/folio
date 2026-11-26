@@ -109,6 +109,7 @@ export default function RootLayout() {
       void clearIconBadgeAsync();
       void queryClient.invalidateQueries({ queryKey: ['unread'] });
       void queryClient.invalidateQueries({ queryKey: ['activity-unread'] });
+      void queryClient.invalidateQueries({ queryKey: ['vlogs'] });
     });
     return () => subscription.remove();
   }, []);

@@ -54,7 +54,8 @@ Blossom servers store opaque ciphertext.
   Archive, circle feeds and vlog detail share one vlog root. Publish, sync,
   read and favourite writes therefore cannot leave independent stale lists.
 - Updates and Archive use `useInfiniteQuery` with repository `limit`/`offset`.
-  Updates adds `unreadOnly`; Archive remains the complete history.
+  Updates adds `unreadOnly`; Archive filters to `author_pubkey = viewer`, its own
+  published history, and re-reads on tab focus and app foreground.
 - `src/stores/inboxSync.ts` owns bootstrap/manual sync, reconnect retry and
   imported-identity restoration. `syncPresentation.ts` maps relay reachability
   to truthful UI copy.

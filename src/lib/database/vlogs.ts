@@ -1,5 +1,8 @@
 import { getDatabase } from './db';
+import { buildVlogListWhere, type ListVlogsOptions } from './vlogQuery';
 import type { Circle, CircleMember, Clip, Vlog } from '../../types/models';
+
+export type { ListVlogsOptions };
 
 interface CircleRow {
   id: string;
@@ -453,31 +456,9 @@ export async function upsertVlog(vlog: Vlog, clips: Clip[]): Promise<void> {
   });
 }
 
-export interface ListVlogsOptions {
-  circleId?: string | null;
-  search?: string;
-  favouritesOnly?: boolean;
-  unreadOnly?: boolean;
-  limit?: number;
-  offset?: number;
-}
-
 export async function listVlogs(viewerPubkey: string, options: ListVlogsOptions = {}): Promise<Vlog[]> {
   const db = await getDatabase();
-  const clauses: string[] = ['viewer_pubkey = ?'];
-  const params: (string | number)[] = [viewerPubkey];
-  if (options.circleId) {
-    clauses.push('circle_id = ?');
-    params.push(options.circleId);
-  }
-  if (options.favouritesOnly) clauses.push('is_favourite = 1');
-  if (options.unreadOnly) clauses.push('unread = 1');
-  if (options.search?.trim()) {
-    clauses.push('(LOWER(COALESCE(title, \'\')) LIKE ? OR LOWER(COALESCE(description, \'\')) LIKE ?)');
-    const needle = `%${options.search.trim().toLowerCase()}%`;
-    params.push(needle, needle);
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const { where, params } = buildVlogListWhere(viewerPubkey, options);
   const rows = await db.getAllAsync<VlogRow>(
     `SELECT * FROM vlogs ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
     ...params,

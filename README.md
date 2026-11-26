@@ -86,8 +86,9 @@ Local Android builds on Windows must live at a short path; see
 Cinematic editorial: Cormorant Garamond for the wordmark and editorial titles;
 Manrope for functional UI. Large media covers, strong scale contrast and quiet
 metadata replace generic feed rows. Updates is a finite unread inbox; Archive is
-the complete chronological history. Four tabs (Updates, Circles, Archive,
-Profile) surround a central full-screen Create action.
+the identity's own published history, while received moments live in Updates and
+each circle feed. Four tabs (Updates, Circles, Archive, Profile) surround a
+central full-screen Create action.
 
 The launcher icon is the serif "f" (`assets/images/icon.png`); the Android
 adaptive foreground and monochrome layers are derived from it. The splash screen
