@@ -157,9 +157,19 @@ relay cannot forge a key message from another member.
 - Some providers MIME-sniff and reject opaque ciphertext. See
   [PROVIDERS.md](./PROVIDERS.md); the app preflights and reports the provider's
   reason.
-- Mirrors are best-effort copies of the same ciphertext on a second provider and
-  are listed in the encrypted key payload. They reuse the same media key, add no
-  new secret material, and do not change who can decrypt.
+- Mirrors are best-effort copies of the same ciphertext on other providers. They
+  are created server-side by asking a provider to pull the blob (BUD-04/BUD-13),
+  so the phone does not re-upload it. They reuse the same media key, add no new
+  secret material, and do not change who can decrypt.
+- Provider-returned blob descriptor URLs must be public `https`; plain `http`,
+  loopback, LAN and link-local descriptors are rejected before the device
+  fetches them or shares them as a primary or copy URL.
+- Recipient mirroring uses the recipient's identity to authorize the copy, so
+  the copy is owned by the recipient and may count against their provider quota.
+  It is rate-limited per sender and refuses ciphertext larger than 32 MiB, but a
+  malicious member can still spend some of the recipient's quota. It can outlive
+  the author's original or a later deletion; only members who can already
+  decrypt the moment can trigger it.
 - Mirrors arrive from other users and are untrusted: only unique public `https`
   origins are kept (at most four), loopback/LAN/link-local hosts are rejected,
   and downloads still verify the pinned ciphertext hash before decryption.

@@ -37,6 +37,7 @@ import { useReducedMotion } from '../../hooks/useReducedMotion';
 import { listComments } from '../../lib/database/comments';
 import { getContactName, listContactNames } from '../../lib/database/contacts';
 import { listCommentReactions, listReactions } from '../../lib/database/reactions';
+import { getSetting } from '../../lib/database/settings';
 import { getCircleMember, getVlog, markVlogRead, setFavourite } from '../../lib/database/vlogs';
 import { shortNpub } from '../../lib/nostr/format';
 import { readSecretKey } from '../../lib/nostr/identity';
@@ -49,12 +50,17 @@ import {
   type ThreadedComment,
 } from '../../lib/social/rules';
 import { ensureLocalClip, type PlaybackProgress } from '../../services/playback';
+import { mirrorReceivedClip } from '../../services/mirroring';
 import { createComment, deleteComment, editComment, setReaction } from '../../services/social';
 import { useInboxSync } from '../../stores/inboxSync';
 import { useSession } from '../../stores/session';
 import { ThemeScope, useTheme } from '../../theme/ThemeProvider';
-import type { Reaction } from '../../types/models';
+import type { Reaction, Vlog } from '../../types/models';
 import { formatBytes, formatDate, formatDuration } from '../../utils/time';
+
+/** Rate-limits automatic recipient mirroring per sender to blunt quota abuse. */
+const SENDER_MIRROR_COOLDOWN_MS = 30_000;
+const senderMirrorCooldown = new Map<string, number>();
 
 export default function VlogScreen() {
   const { id, comments } = useLocalSearchParams<{ id: string; comments?: string }>();
@@ -96,6 +102,7 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [composerActive, setComposerActive] = useState(false);
   const inFlight = useRef<Set<string>>(new Set());
+  const mirrorAttempted = useRef<Set<string>>(new Set());
   const mounted = useRef(true);
   const sheetScroll = useRef<ScrollViewInstance>(null);
 
@@ -290,6 +297,45 @@ function VlogContent({ id, expandComments }: { id: string; expandComments: boole
         inFlight.current.delete(clip.id);
       });
   }, [currentClip, localUris, errors]);
+
+  useEffect(() => {
+    if (!identity || !currentClip || offline || vlog?.authorPubkey === identity.pubkey) return;
+    const senderKey = `${identity.id}:${vlog?.authorPubkey ?? 'unknown'}`;
+    const lastSenderMirror = senderMirrorCooldown.get(senderKey);
+    if (lastSenderMirror && Date.now() - lastSenderMirror < SENDER_MIRROR_COOLDOWN_MS) return;
+    senderMirrorCooldown.set(senderKey, Date.now());
+    const attemptKey = `${identity.id}:${currentClip.id}`;
+    if (mirrorAttempted.current.has(attemptKey)) return;
+    mirrorAttempted.current.add(attemptKey);
+    const clip = currentClip;
+    const currentIdentity = identity;
+    void (async () => {
+      const enabled = await getSetting('media.recipientMirror');
+      if (enabled === '0') return;
+      const secretKey = await readSecretKey(currentIdentity.id);
+      const result = await mirrorReceivedClip({ clip, secretKey });
+      if (result.added.length > 0 && mounted.current) {
+        queryClient.setQueryData<Vlog | null>(queryKeys.vlog(currentIdentity.pubkey, id), (old) => {
+          if (!old) return old;
+          return {
+            ...old,
+            clips: old.clips?.map((item) =>
+              item.id === clip.id ? { ...item, mirrors: result.mirrors } : item
+            ),
+          };
+        });
+        if (mounted.current) {
+          // Retry a failed download now that the clip has new fallback URLs.
+          setErrors((current) => {
+            if (!(clip.id in current)) return current;
+            const next = { ...current };
+            delete next[clip.id];
+            return next;
+          });
+        }
+      }
+    })().catch(() => undefined);
+  }, [currentClip, identity, offline, id, queryClient, vlog?.authorPubkey]);
 
   const panResponder = useMemo(
     () =>

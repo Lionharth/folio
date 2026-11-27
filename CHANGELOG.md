@@ -33,9 +33,18 @@
   are recovered at startup and returned to Create with the clip attached.
 - Publishing keeps the screen awake while a moment uploads, so a long encrypted
   upload is not interrupted by the display sleeping.
+- Encrypted media is mirrored server-side to every configured storage server
+  (BUD-04 `PUT /mirror`, or BUD-13 `POST /<sha256>` when advertised) instead of
+  re-uploading the blob from the phone. If a server is unreachable while
+  publishing, a recipient who can reach it later can fill in the copy.
+- A "Mirror received media" setting (Profile → Advanced, on by default) lets a
+  recipient ask other storage servers to keep a copy of a moment they open,
+  without re-uploading the ciphertext from any phone.
 
 ### Changed
 
+- Create → Advanced "Backup copy" is now "Mirror to all servers" and covers
+  every other provider instead of a single backup.
 - Circles is a compact chat-style list: each circle is a row with its picture on
   the left and name on the right, so more circles fit on screen.
 

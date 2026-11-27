@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, View } from 'react-native';
 import { router } from 'expo-router';
 import * as Clipboard from 'expo-clipboard';
@@ -14,6 +14,7 @@ import { InlineNotice } from '../../components/ui/Notice';
 import { ListRow, PageHeader, SectionHeader } from '../../components/ui/Layout';
 import { ScreenScroll } from '../../components/ui/Screen';
 import { LoadingState } from '../../components/ui/States';
+import { getSetting, setSetting } from '../../lib/database/settings';
 import { shortNpub } from '../../lib/nostr/format';
 import { exportIdentitySecret } from '../../lib/nostr/identity';
 import { clearRecoveryCheckpointForIdentity } from '../../lib/security/recoveryCheckpoint';
@@ -31,9 +32,30 @@ export default function ProfileScreen() {
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ message: string; tone: 'neutral' | 'success' | 'error' } | null>(null);
+  const [recipientMirror, setRecipientMirror] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSetting('media.recipientMirror')
+      .then((value) => {
+        if (!cancelled) setRecipientMirror(value !== '0');
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (!identity) return <LoadingState label="Opening profile" />;
   const npub = identity.npub;
+
+  const toggleRecipientMirror = () => {
+    setRecipientMirror((current) => {
+      const next = !current;
+      setSetting('media.recipientMirror', next ? '1' : '0').catch(() => undefined);
+      return next;
+    });
+  };
 
   const copy = async (value: string, label: string) => {
     try {
@@ -241,6 +263,28 @@ export default function ProfileScreen() {
             onPress={() => router.push('/lab')}
             showDivider
           />
+          <Pressable
+            onPress={toggleRecipientMirror}
+            accessibilityRole="switch"
+            accessibilityLabel="Mirror received media"
+            accessibilityState={{ checked: recipientMirror }}
+            style={({ pressed }) => ({ backgroundColor: pressed ? theme.colors.surfaceSubtle : 'transparent' })}
+          >
+            <View style={{ paddingVertical: theme.spacing.lg, flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}>
+              <View style={{ flex: 1, gap: 2 }}>
+                <AppText variant="bodyStrong">Mirror received media</AppText>
+                <AppText variant="caption" color="textSecondary">
+                  When you open a moment, ask other storage servers to keep a copy. Copies are stored under your identity and may use your server quota.
+                </AppText>
+              </View>
+              <Feather
+                name={recipientMirror ? 'check-square' : 'square'}
+                size={18}
+                color={recipientMirror ? theme.colors.textPrimary : theme.colors.textTertiary}
+              />
+            </View>
+          </Pressable>
+          <Divider />
         </View>
         <View style={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: theme.spacing.lg, gap: theme.spacing.md }}>
           <AppText variant="bodyStrong">Sync</AppText>

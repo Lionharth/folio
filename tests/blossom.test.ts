@@ -7,7 +7,13 @@ import {
   describeBlossomError,
   extractBlossomDetail,
 } from '../src/lib/blossom/errors';
-import { buildMirrorCandidates, buildProviderCandidates } from '../src/lib/blossom/selection';
+import { BlobDescriptorError, parseBlobDescriptor } from '../src/lib/blossom/mirror';
+import {
+  buildMirrorCandidates,
+  buildProviderCandidates,
+  buildRecipientMirrorTargets,
+  mergeMirrorUrls,
+} from '../src/lib/blossom/selection';
 
 const ANDROID_TLS =
   "Call to function 'FileSystemUploadTask.start' has been rejected. " +
@@ -74,6 +80,132 @@ test('mirror candidates handle zero or unusable primaries', () => {
   assert.deepEqual(buildMirrorCandidates('https://nostr.download', 'https://nostr.download', [
     'https://nostr.download',
   ]), []);
+});
+
+test('mirror candidates can target every other provider', () => {
+  const presets = [
+    'https://nostr.download',
+    'https://blossom.yakihonne.com',
+    'https://blossom.ditto.pub',
+    'https://blossom.data.haus',
+  ];
+  assert.deepEqual(
+    buildMirrorCandidates(
+      'https://blossom.data.haus',
+      'https://nostr.download',
+      presets,
+      Number.POSITIVE_INFINITY
+    ),
+    ['https://nostr.download', 'https://blossom.yakihonne.com', 'https://blossom.ditto.pub']
+  );
+});
+
+test('recipient mirror targets skip the primary and known copy origins', () => {
+  const providers = [
+    'https://nostr.download',
+    'https://blossom.yakihonne.com',
+    'https://blossom.ditto.pub',
+    'https://blossom.data.haus',
+  ];
+  assert.deepEqual(
+    buildRecipientMirrorTargets('https://blossom.data.haus/blob.fc1', [], providers),
+    ['https://nostr.download', 'https://blossom.yakihonne.com', 'https://blossom.ditto.pub']
+  );
+  assert.deepEqual(
+    buildRecipientMirrorTargets(
+      'https://blossom.data.haus/blob.fc1',
+      ['https://blossom.yakihonne.com/blob.fc1', 'https://blossom.ditto.pub/blob.fc1'],
+      providers
+    ),
+    ['https://nostr.download']
+  );
+  assert.deepEqual(
+    buildRecipientMirrorTargets(
+      'https://blossom.data.haus/blob.fc1',
+      [],
+      ['https://blossom.data.haus', 'https://blossom.data.haus/', 'https://nostr.download']
+    ),
+    ['https://nostr.download']
+  );
+});
+
+test('recipient mirror targets reject unusable primaries', () => {
+  const providers = ['https://nostr.download', 'https://blossom.ditto.pub'];
+  assert.deepEqual(buildRecipientMirrorTargets('not a url', [], providers), []);
+  assert.deepEqual(buildRecipientMirrorTargets('http://nostr.download/blob', [], providers), []);
+  assert.deepEqual(buildRecipientMirrorTargets('https://127.0.0.1/blob', [], providers), []);
+});
+
+test('merge mirror urls keeps existing copies first and dedupes by origin', () => {
+  assert.deepEqual(
+    mergeMirrorUrls(
+      ['https://nostr.download/blob.fc1'],
+      ['https://blossom.ditto.pub/blob.fc1', 'https://nostr.download/other.fc1']
+    ),
+    ['https://nostr.download/blob.fc1', 'https://blossom.ditto.pub/blob.fc1']
+  );
+  assert.deepEqual(
+    mergeMirrorUrls([], [
+      'https://nostr.download/a',
+      'https://blossom.ditto.pub/b',
+      'https://blossom.data.haus/c',
+      'https://blossom.yakihonne.com/d',
+      'https://blossom.hyperbolic.xyz/e',
+    ]),
+    ['https://nostr.download/a', 'https://blossom.ditto.pub/b', 'https://blossom.data.haus/c', 'https://blossom.yakihonne.com/d']
+  );
+});
+
+test('merge mirror urls drops non-public and non-https entries', () => {
+  assert.deepEqual(
+    mergeMirrorUrls([], ['http://nostr.download/a', 'https://127.0.0.1/b', 'https://localhost/c', 'not a url', '']),
+    []
+  );
+});
+
+test('blob descriptor parser validates hash, size and URL', () => {
+  const sha256 = 'a'.repeat(64);
+  const valid = JSON.stringify({ url: 'https://blossom.data.haus/blob.fc1', sha256, size: 42, type: 'application/octet-stream' });
+  assert.deepEqual(parseBlobDescriptor(valid, { sha256, size: 42 }), {
+    url: 'https://blossom.data.haus/blob.fc1',
+    sha256,
+    size: 42,
+    type: 'application/octet-stream',
+  });
+
+  assert.throws(
+    () => parseBlobDescriptor(JSON.stringify({ url: 'https://x.test/a', sha256: 'b'.repeat(64), size: 42 }), { sha256 }),
+    BlobDescriptorError
+  );
+  assert.throws(
+    () => parseBlobDescriptor(JSON.stringify({ url: 'https://x.test/a', sha256, size: 41 }), { sha256, size: 42 }),
+    BlobDescriptorError
+  );
+  assert.throws(
+    () => parseBlobDescriptor(JSON.stringify({ url: 'javascript:alert(1)', sha256, size: 42 }), { sha256 }),
+    BlobDescriptorError
+  );
+  assert.throws(
+    () => parseBlobDescriptor(JSON.stringify({ url: 'http://nostr.download/a', sha256, size: 42 }), { sha256 }),
+    BlobDescriptorError
+  );
+  assert.throws(
+    () => parseBlobDescriptor(JSON.stringify({ url: 'https://127.0.0.1/a', sha256, size: 42 }), { sha256 }),
+    BlobDescriptorError
+  );
+  assert.throws(
+    () => parseBlobDescriptor(JSON.stringify({ url: 'https://localhost/a', sha256, size: 42 }), { sha256 }),
+    BlobDescriptorError
+  );
+  assert.throws(() => parseBlobDescriptor('not json', { sha256 }), BlobDescriptorError);
+});
+
+test('blob descriptor parser falls back to the expected size', () => {
+  const sha256 = 'c'.repeat(64);
+  assert.equal(
+    parseBlobDescriptor(JSON.stringify({ url: 'https://x.test/a', sha256 }), { sha256, size: 7 }).size,
+    7
+  );
 });
 
 test('Android trust-anchor failures classify as tls', () => {

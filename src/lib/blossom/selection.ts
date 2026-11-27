@@ -54,3 +54,69 @@ export function buildMirrorCandidates(
   }
   return mirrors;
 }
+
+/**
+ * Providers a recipient can ask to mirror a clip. Origins already holding the
+ * primary or a known copy are skipped so repeat opens do not re-send requests.
+ */
+export function buildRecipientMirrorTargets(
+  primaryUrl: string,
+  existingMirrors: readonly string[],
+  providers: readonly string[]
+): string[] {
+  const primaryKey = httpOrigin(primaryUrl, { httpsOnly: true, publicHostOnly: true });
+  if (!primaryKey) return [];
+
+  const skip = new Set<string>([primaryKey]);
+  for (const mirror of existingMirrors) {
+    const key = httpOrigin(mirror, { httpsOnly: true, publicHostOnly: true });
+    if (key) skip.add(key);
+  }
+
+  const targets: string[] = [];
+  for (const provider of providers) {
+    const key = httpOrigin(provider, { httpsOnly: true, publicHostOnly: true });
+    if (!key || skip.has(key)) continue;
+    skip.add(key);
+    targets.push(trimServerUrl(provider));
+  }
+  return targets;
+}
+
+export const MAX_MIRROR_URLS = 4;
+
+/**
+ * Mirrors are sender-supplied download fallbacks, so they are untrusted input.
+ * Keep only public https blobs, one per origin, bounded in number.
+ */
+export function sanitizeMirrorUrls(value: unknown, max = MAX_MIRROR_URLS): string[] {
+  if (!Array.isArray(value)) return [];
+  const limit = Math.max(0, Math.floor(max));
+  if (limit === 0) return [];
+
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const origin = httpOrigin(trimmed, { httpsOnly: true, publicHostOnly: true });
+    if (!origin || seen.has(origin)) continue;
+    seen.add(origin);
+    urls.push(trimServerUrl(trimmed));
+    if (urls.length >= limit) break;
+  }
+  return urls;
+}
+
+/**
+ * Merge existing and newly created copies, keeping only public https blobs,
+ * one per origin, in the existing-first order recipients already trust.
+ */
+export function mergeMirrorUrls(
+  existing: readonly string[],
+  added: readonly string[],
+  max = MAX_MIRROR_URLS
+): string[] {
+  return sanitizeMirrorUrls([...existing, ...added], max);
+}

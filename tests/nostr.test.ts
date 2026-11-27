@@ -143,6 +143,10 @@ test('payload parsing rejects malformed or unsafe values', () => {
   assert.equal(parseKeyPayload([['folio-key', 'not json']]), null);
   assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, keyB64: bytesToBase64(new Uint8Array(16)) })]]), null);
   assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, encryptedSha256: '' })]]), null);
+  assert.equal(
+    parseKeyPayload([['folio-key', JSON.stringify({ ...good, encryptedSha256: 'a'.repeat(63) + '/' })]]),
+    null
+  );
   assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, format: 'other' })]]), null);
   assert.equal(parseKeyPayload([['folio-key', JSON.stringify({ ...good, v: 2 })]]), null);
   assert.equal(parseKeyPayload([['other-tag', JSON.stringify(good)]]), null);

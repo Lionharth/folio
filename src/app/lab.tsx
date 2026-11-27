@@ -102,12 +102,15 @@ async function computeProviderResults(): Promise<CheckResult[]> {
         const client = new BlossomClient(preset.url);
         const probe = await withTimeout(client.probe(), `${preset.name} probe`, 8_000);
         const discovery = await withTimeout(client.discover(), `${preset.name} discovery`, 8_000);
+        const mirror = await withTimeout(client.mirrorSupport(), `${preset.name} mirror`, 8_000).catch(
+          () => null
+        );
         const reason = probe.detail ? probe.detail.slice(0, 80) : undefined;
         return {
           label,
           ok: probe.ok,
           detail: probe.ok
-            ? `UP · ${probe.latencyMs} ms · PUT ${discovery.put ? 'yes' : 'no'} · HEAD ${discovery.head ? 'yes' : 'no'}`
+            ? `UP · ${probe.latencyMs} ms · PUT ${discovery.put ? 'yes' : 'no'} · HEAD ${discovery.head ? 'yes' : 'no'} · MIRROR ${mirror ?? 'no'}`
             : `${probe.kind ?? 'unreachable'}${probe.status ? ` ${probe.status}` : ''}${reason ? ` · ${reason}` : ''}`,
         };
       } catch (error) {

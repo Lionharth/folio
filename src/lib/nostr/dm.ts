@@ -4,9 +4,11 @@ import { createRumor, createSeal, createWrap, unwrapEvent } from 'nostr-tools/ni
 import { KIND_PRIVATE_MESSAGE, parseControlPayload, type CircleControlPayload } from './circleControl';
 
 import { MAX_THUMBNAIL_BYTES } from '../../constants/media';
-import { httpOrigin, trimServerUrl } from '../blossom/origin';
+import { sanitizeMirrorUrls } from '../blossom/selection';
 import { bytesToBase64, base64ToBytes } from '../crypto/bytes';
 import { DEFAULT_DM_RELAYS, publishToRelays, queryRelay, queryRelays, type Pool } from './relays';
+
+export { sanitizeMirrorUrls } from '../blossom/selection';
 
 export const KIND_FILE_MESSAGE = 15;
 export const KIND_DM_RELAY_LIST = 10050;
@@ -150,6 +152,8 @@ export interface InboxMessage {
   wrapEventId: string;
 }
 
+const HEX_64 = /^[0-9a-f]{64}$/;
+
 export function parseKeyPayload(tags: string[][]): VlogKeyPayload | null {
   const tag = tags.find((entry) => entry[0] === FOLIO_KEY_TAG);
   if (!tag?.[1]) return null;
@@ -161,7 +165,14 @@ export function parseKeyPayload(tags: string[][]): VlogKeyPayload | null {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   if (parsed.v !== 1 || parsed.format !== FOLIO_FORMAT_FC1) return null;
-  if (!parsed.keyB64 || !parsed.encryptedSha256 || !parsed.clipId || !parsed.vlogId) return null;
+  if (!parsed.keyB64 || !parsed.clipId || !parsed.vlogId) return null;
+  if (typeof parsed.encryptedSha256 !== 'string' || !HEX_64.test(parsed.encryptedSha256)) return null;
+  if (
+    parsed.plaintextSha256 !== undefined &&
+    (typeof parsed.plaintextSha256 !== 'string' || !HEX_64.test(parsed.plaintextSha256))
+  ) {
+    return null;
+  }
   if (parsed.authorName !== undefined) {
     if (typeof parsed.authorName !== 'string' || parsed.authorName.trim().length === 0) return null;
     if (parsed.authorName.length > 40) return null;
@@ -178,33 +189,6 @@ export function parseKeyPayload(tags: string[][]): VlogKeyPayload | null {
     else delete parsed.thumbnail;
   }
   return parsed;
-}
-
-const HEX_64 = /^[0-9a-f]{64}$/;
-const MAX_MIRROR_URLS = 4;
-
-/**
- * Mirrors are sender-supplied download fallbacks, so they are untrusted input.
- * Keep only public https blobs, one per origin, bounded in number.
- */
-export function sanitizeMirrorUrls(value: unknown, max = MAX_MIRROR_URLS): string[] {
-  if (!Array.isArray(value)) return [];
-  const limit = Math.max(0, Math.floor(max));
-  if (limit === 0) return [];
-
-  const seen = new Set<string>();
-  const urls: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== 'string') continue;
-    const trimmed = entry.trim();
-    if (!trimmed) continue;
-    const origin = httpOrigin(trimmed, { httpsOnly: true, publicHostOnly: true });
-    if (!origin || seen.has(origin)) continue;
-    seen.add(origin);
-    urls.push(trimServerUrl(trimmed));
-    if (urls.length >= limit) break;
-  }
-  return urls;
 }
 
 /**

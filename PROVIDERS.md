@@ -1,9 +1,10 @@
 # Providers
 
 Folio does not run media storage. These measurements come from
-`scripts/provider-probe.ts` and `scripts/limits-probe.ts`, executed on
-2026-11-24 from a Windows host in Central Europe against fresh random blobs
-(opaque bytes with no media structure). Results are a snapshot, not a promise.
+`scripts/provider-probe.ts`, `scripts/limits-probe.ts` and
+`scripts/mirror-probe.ts`, executed on 2026-11-24 (mirror probe 2026-11-27)
+from a Windows host in Central Europe against fresh random blobs (opaque bytes
+with no media structure). Results are a snapshot, not a promise.
 
 ## Why this matters
 
@@ -74,6 +75,26 @@ All working providers accepted BUD-11 `kind: 24242` tokens with `t=upload`,
 nostr.download, Yakihonne, Ditto or data.haus. psbt.me requires payment above
 1 MiB. No provider required an account in these tests.
 
+## Server-side mirroring (BUD-04 / BUD-13)
+
+Probed on 2026-11-27 with `scripts/mirror-probe.ts`: one throwaway identity
+uploads a 4 KiB random blob to `nostr.download`, then a **different** identity
+asks each other server to mirror it. This is the recipient-assisted case, where
+the mirror signer is not the uploader.
+
+| Server | `OPTIONS /mirror` | `OPTIONS /<sha256>` | Mirror with non-uploader token |
+| --- | --- | --- | --- |
+| `nostr.download` | 200 `PUT` | 200 `GET,HEAD,PUT,DELETE,OPTIONS` (no POST) | **201** via BUD-04 |
+| `blossom.yakihonne.com` | 403 | 204 `GET,HEAD,PUT,DELETE,OPTIONS` (no POST) | unsupported |
+| `blossom.ditto.pub` | 204 `GET,HEAD,PUT,DELETE` | 204 `GET,HEAD,PUT,DELETE` (no POST) | **201** via BUD-04 |
+| `blossom.data.haus` | 204 `GET,HEAD,PUT,DELETE,OPTIONS` | 204 `GET,HEAD,PUT,DELETE,OPTIONS` | **200** via BUD-04 |
+
+Yakihonne does not advertise mirroring, so Folio skips it. The other three
+accept a `PUT /mirror` signed by a key that did not upload the blob and return a
+verified descriptor. No tested server required the original uploader's key.
+`nostr.download` was probed as a destination from a `data.haus` origin, which is
+the school-Wi-Fi case (only one provider reachable for the upload).
+
 ## Retention and reliability
 
 - None of the tested providers documents a guarantee of permanence. yakihonne's
@@ -81,10 +102,13 @@ nostr.download, Yakihonne, Ditto or data.haus. psbt.me requires payment above
 - `Sunset` headers were not observed on downloads. Absence is not a guarantee.
 - Uploads are not resumable with BUD-02; a dropped upload restarts. The app
   retries at the job level in a future milestone.
-- Folio stores a backup copy by default: after the primary verifies, the same
-  ciphertext is uploaded to one other preset. The copy is best-effort, encrypted
-  with the same key, and listed in the key payload so recipients can fall back.
-  It can be turned off per device in Create → Advanced.
+- Folio asks every other preset to mirror the ciphertext server-side by default:
+  after the primary verifies, each destination pulls the blob via BUD-04 (or
+  BUD-13 when advertised). The copy is best-effort, encrypted with the same key,
+  and listed in the key payload so recipients can fall back. It can be turned
+  off per device in Create → Advanced. When the author's network blocks a
+  provider, a recipient who can reach it can ask for the copy when opening the
+  moment (`media.recipientMirror`, on by default).
 
 ## TLS trust (Android)
 
@@ -113,6 +137,7 @@ only from a Windows host.
 ```bash
 npx tsx scripts/provider-probe.ts --servers https://nostr.download,https://blossom.yakihonne.com --size 26214400
 npx tsx scripts/limits-probe.ts
+npx tsx scripts/mirror-probe.ts
 ```
 
 Both scripts generate a throwaway Nostr key, sign real BUD-11 tokens, upload

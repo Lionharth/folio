@@ -51,7 +51,7 @@ const STAGE_LABELS: Record<PublishProgress['stage'], string> = {
   'checking-provider': 'Checking encrypted storage',
   uploading: 'Uploading the encrypted video',
   verifying: 'Verifying the upload',
-  mirroring: 'Storing a backup copy',
+  mirroring: 'Mirroring to other servers',
   thumbnail: 'Protecting the cover',
   distributing: 'Sharing the key privately with your circle',
   saving: 'Saving the entry to Archive',
@@ -69,7 +69,7 @@ export default function CreateScreen() {
   const [description, setDescription] = useState('');
   const [chosenCircleId, setCircleId] = useState<string | null>(null);
   const [providerUrl, setProviderUrl] = useState(DEFAULT_PROVIDER_URL);
-  const [mirrorCopies, setMirrorCopies] = useState(true);
+  const [mirrorAll, setMirrorAll] = useState(true);
   const [publishing, setPublishing] = useState(false);
   const [openingCamera, setOpeningCamera] = useState(false);
   const [progress, setProgress] = useState<PublishProgress | null>(null);
@@ -83,7 +83,7 @@ export default function CreateScreen() {
     let cancelled = false;
     getSetting('media.mirrorCopies')
       .then((value) => {
-        if (!cancelled) setMirrorCopies(value !== '0');
+        if (!cancelled) setMirrorAll(value !== '0');
       })
       .catch(() => undefined);
     return () => {
@@ -91,8 +91,8 @@ export default function CreateScreen() {
     };
   }, []);
 
-  const toggleMirrorCopies = useCallback(() => {
-    setMirrorCopies((current) => {
+  const toggleMirrorAll = useCallback(() => {
+    setMirrorAll((current) => {
       const next = !current;
       setSetting('media.mirrorCopies', next ? '1' : '0').catch(() => undefined);
       return next;
@@ -245,7 +245,7 @@ export default function CreateScreen() {
         title,
         description,
         providerUrl,
-        mirrorCopies: mirrorCopies ? 1 : 0,
+        mirrorAll,
         onProgress: setProgress,
       });
       await Promise.all([
@@ -405,14 +405,14 @@ export default function CreateScreen() {
               );
             })}
             <Pressable
-              onPress={toggleMirrorCopies}
+              onPress={toggleMirrorAll}
               disabled={publishing}
               accessibilityRole="switch"
-              accessibilityLabel="Keep a backup copy on another server"
-              accessibilityState={{ checked: mirrorCopies, disabled: publishing }}
+              accessibilityLabel="Mirror this moment to every storage server"
+              accessibilityState={{ checked: mirrorAll, disabled: publishing }}
               style={{
                 borderWidth: 1,
-                borderColor: mirrorCopies ? theme.colors.textPrimary : theme.colors.border,
+                borderColor: mirrorAll ? theme.colors.textPrimary : theme.colors.border,
                 borderRadius: theme.radius.md,
                 padding: theme.spacing.lg,
                 minHeight: 64,
@@ -420,15 +420,15 @@ export default function CreateScreen() {
             >
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md }}>
                 <View style={{ flex: 1, gap: theme.spacing.xs }}>
-                  <AppText variant="bodyStrong">Backup copy</AppText>
+                  <AppText variant="bodyStrong">Mirror to all servers</AppText>
                   <AppText variant="caption" color="textSecondary">
-                    Stores the encrypted video on a second server. Uses extra data.
+                    Asks every storage server to keep a copy. The copy moves server-side, so this phone does not upload it again.
                   </AppText>
                 </View>
                 <Feather
-                  name={mirrorCopies ? 'check-square' : 'square'}
+                  name={mirrorAll ? 'check-square' : 'square'}
                   size={18}
-                  color={mirrorCopies ? theme.colors.textPrimary : theme.colors.textTertiary}
+                  color={mirrorAll ? theme.colors.textPrimary : theme.colors.textTertiary}
                 />
               </View>
             </Pressable>

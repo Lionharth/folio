@@ -133,11 +133,13 @@ Design choices:
    HTTP 5xx and a failed blob verification fall through to the next candidate;
    a 4xx is a policy answer and is surfaced without retrying elsewhere.
 6. Verify the returned descriptor and `HEAD` the blob.
-7. Unless disabled in Create → Advanced, upload the same ciphertext to one
-   backup provider (the next preset whose origin differs from the provider that
-   actually stored the primary copy). The encrypted cover is backed up to the
-   same provider. Mirrors are best-effort: transport, TLS, policy and
-   verification failures are ignored, and only verified copies are recorded.
+7. Unless disabled in Create → Advanced, ask every other preset to mirror the
+   ciphertext server-side (BUD-04 `PUT /mirror`, or BUD-13 `POST /<sha256>` when
+   advertised). The destination pulls the blob from the primary URL, so the
+   phone does not upload it again. The encrypted cover is mirrored the same way
+   to the providers that accepted the video. Mirrors are best-effort: transport,
+   TLS, policy, unsupported-endpoint and verification failures are ignored, and
+   only verified copies are recorded.
 8. Persist the media key in SecureStore **before** distribution.
 9. Build a NIP-17 `kind: 15` rumor carrying the file URL, ciphertext hash, the
    `mirrors` list, and a `folio-key` payload; seal and gift-wrap it for each
@@ -149,6 +151,17 @@ Design choices:
 
 The vlog never becomes visible to a recipient before its media blob exists and
 has been hashed by the uploader.
+
+## Recipient-assisted mirroring
+
+`src/services/mirroring.ts` lets a recipient repair a thin mirror set. When a
+moment is opened and `media.recipientMirror` is on, the recipient's device asks
+every reachable provider that does not already hold the clip to pull the
+ciphertext from the clip's primary URL (BUD-04/BUD-13). The request is signed by
+the recipient's identity and runs in the background, so it works when the author
+published from a network that blocked some providers, and it never re-uploads
+the blob from a phone. Successful URLs are merged into `clips.mirrors` for that
+recipient; other clients are not notified.
 
 ## Circle invitations
 

@@ -533,6 +533,15 @@ export async function updateClipLocalUri(clipId: string, localUri: string): Prom
   await db.runAsync('UPDATE clips SET local_uri = ?, state = ? WHERE id = ?', localUri, 'downloaded', clipId);
 }
 
+export async function updateClipMirrors(clipId: string, mirrors: string[] | null): Promise<void> {
+  const db = await getDatabase();
+  await db.runAsync(
+    'UPDATE clips SET mirrors = ? WHERE id = ?',
+    mirrors && mirrors.length > 0 ? JSON.stringify(mirrors) : null,
+    clipId
+  );
+}
+
 export async function updateVlogCover(vlogId: string, coverUri: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync('UPDATE vlogs SET cover_uri = ? WHERE id = ?', coverUri, vlogId);

@@ -70,7 +70,8 @@ nostrcheck (400), psbt.me (payment over 1 MiB), satellite.earth (paid account).
    succeeded through other relays. Per-relay compatibility must be measured.
 4. **Provider fragility.** Most Blossom servers sniff content and reject
    ciphertext. Four working servers are not a guarantee of retention. Mirroring
-   is not implemented.
+   is implemented server-side (BUD-04/BUD-13) and recipient-assisted, but servers
+   can still reject third-party mirror tokens or drop blobs.
 5. **Media key durability.** Keys live in SecureStore. Restoring an nsec on a new
    device does not restore old media keys; an encrypted key backup is required.
 6. **Background delivery is best-effort.** Uploads stop when the process dies.

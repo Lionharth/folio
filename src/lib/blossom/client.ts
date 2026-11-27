@@ -2,6 +2,33 @@ import { Directory, File, Paths, UploadType, type UploadResult as FileUploadResu
 
 import { buildBlossomAuthHeader } from './auth';
 import { classifyBlossomError, describeBlossomError, extractBlossomDetail, type BlossomFailureKind } from './errors';
+import { parseBlobDescriptor, type BlobDescriptor } from './mirror';
+import { httpOrigin } from './origin';
+
+export type { BlobDescriptor } from './mirror';
+
+export type MirrorMethod = 'bud04' | 'bud13';
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const MIRROR_SUPPORT_NEGATIVE_TTL_MS = 5 * 60_000;
+
+interface MirrorSupportEntry {
+  method: MirrorMethod | null;
+  expiresAt: number;
+}
+
+const mirrorSupportCache = new Map<string, MirrorSupportEntry>();
+const mirrorSupportInFlight = new Map<string, Promise<MirrorMethod | null>>();
+
+function advertisedMethods(response: Response): Set<string> {
+  const raw = `${response.headers.get('allow') ?? ''},${response.headers.get('access-control-allow-methods') ?? ''}`;
+  return new Set(
+    raw
+      .toUpperCase()
+      .split(/[,\s]+/)
+      .filter(Boolean)
+  );
+}
 
 export interface MediaProviderInfo {
   /** Stable id, normally the origin. */
@@ -10,14 +37,6 @@ export interface MediaProviderInfo {
   url: string;
   /** Whether this provider is enabled for new uploads. */
   uploadEnabled: boolean;
-}
-
-export interface BlobDescriptor {
-  url: string;
-  sha256: string;
-  size: number;
-  type: string;
-  uploaded?: number;
 }
 
 export interface UploadProgressInfo {
@@ -39,6 +58,15 @@ export interface UploadResult {
   provider: string;
   descriptor: BlobDescriptor;
   verified: boolean;
+}
+
+export interface MirrorOptions {
+  /** Lowercase hex sha256 of the exact encrypted bytes to mirror. */
+  sha256: string;
+  expectedSize?: number;
+  secretKey: Uint8Array;
+  /** Server-side pull timeout; the destination downloads the blob. */
+  timeoutMs?: number;
 }
 
 export interface ProbeResult {
@@ -196,7 +224,7 @@ export class BlossomClient {
    * still verify the returned descriptor against our local hash and size.
    */
   async uploadFile(file: File, options: UploadOptions): Promise<UploadResult> {
-    if (!options.sha256 || options.sha256.length !== 64) throw new BlossomError('Missing blob hash');
+    if (!SHA256_HEX.test(options.sha256)) throw new BlossomError('Missing or invalid blob hash');
     if (file.size !== options.size) throw new BlossomError('File size changed before upload');
 
     const authorization = buildBlossomAuthHeader(options.secretKey, {
@@ -246,21 +274,156 @@ export class BlossomClient {
 
     let descriptor: BlobDescriptor;
     try {
-      descriptor = JSON.parse(result.body) as BlobDescriptor;
-    } catch {
-      throw new BlossomError('Upload response was not a blob descriptor');
-    }
-    if (descriptor.sha256 !== options.sha256) {
-      throw new BlossomError('Server returned a different blob hash than the uploaded bytes');
-    }
-    if (typeof descriptor.size === 'number' && descriptor.size !== options.size) {
-      throw new BlossomError('Server stored a different size than the uploaded bytes');
-    }
-    if (!/^https?:\/\//.test(descriptor.url)) {
-      throw new BlossomError('Server returned an invalid blob URL');
+      descriptor = parseBlobDescriptor(result.body, { sha256: options.sha256, size: options.size });
+    } catch (error) {
+      throw new BlossomError(error instanceof Error ? error.message : 'Upload response was not a blob descriptor');
     }
 
     const verified = await this.verifyBlob(descriptor.url, options.size);
+    return { provider: this.id, descriptor, verified };
+  }
+
+  /**
+   * Discovers which server-side mirror endpoint a provider advertises. BUD-04
+   * (`PUT /mirror`) is preferred; BUD-13 (`POST /<sha256>`) is the newer
+   * equivalent and is used when a server only advertises POST.
+   */
+  async mirrorSupport(timeoutMs = 5000): Promise<MirrorMethod | null> {
+    const cached = mirrorSupportCache.get(this.url);
+    if (cached && cached.expiresAt > Date.now()) return cached.method;
+
+    const inFlight = mirrorSupportInFlight.get(this.url);
+    if (inFlight) return inFlight;
+
+    const probe = (async (): Promise<MirrorMethod | null> => {
+      try {
+        const legacy = await fetchWithTimeout(`${this.url}/mirror`, { method: 'OPTIONS' }, timeoutMs);
+        if (advertisedMethods(legacy).has('PUT')) return 'bud04';
+      } catch {
+        // Fall through to the path-based endpoint.
+      }
+      try {
+        const path = await fetchWithTimeout(`${this.url}/${'0'.repeat(64)}`, { method: 'OPTIONS' }, timeoutMs);
+        if (advertisedMethods(path).has('POST')) return 'bud13';
+      } catch {
+        // Neither endpoint responded.
+      }
+      return null;
+    })();
+
+    mirrorSupportInFlight.set(this.url, probe);
+    try {
+      const method = await probe;
+      mirrorSupportCache.set(this.url, {
+        method,
+        // Re-probe negatives after a short window so a network that blocked a
+        // provider can recover without restarting the app.
+        expiresAt: method ? Number.POSITIVE_INFINITY : Date.now() + MIRROR_SUPPORT_NEGATIVE_TTL_MS,
+      });
+      return method;
+    } finally {
+      mirrorSupportInFlight.delete(this.url);
+    }
+  }
+
+  /**
+   * BUD-04 / BUD-13 mirroring: asks this server to pull `sourceUrl` and store
+   * the same ciphertext. The destination performs the download, so the device
+   * never re-uploads the blob.
+   */
+  async mirrorBlob(sourceUrl: string, options: MirrorOptions): Promise<UploadResult> {
+    if (!SHA256_HEX.test(options.sha256)) throw new BlossomError('Missing or invalid blob hash');
+    const source = sourceUrl.trim();
+    if (!httpOrigin(source, { httpsOnly: true, publicHostOnly: true })) {
+      throw new BlossomError('Mirror source must be a public https URL');
+    }
+
+    const method = await this.mirrorSupport();
+    if (!method) {
+      throw new BlossomError(
+        'This server does not advertise blob mirroring',
+        undefined,
+        undefined,
+        'policy'
+      );
+    }
+
+    const authorization = buildBlossomAuthHeader(options.secretKey, {
+      verb: 'upload',
+      server: this.url,
+      sha256: options.sha256,
+      content: 'Mirror Blob',
+      lifetimeSeconds: 900,
+    });
+
+    let response: Response;
+    try {
+      response =
+        method === 'bud13'
+          ? await fetchWithTimeout(
+              `${this.url}/${options.sha256}`,
+              {
+                method: 'POST',
+                headers: {
+                  Authorization: authorization,
+                  'Content-Type': 'text/plain; charset=utf-8',
+                },
+                body: `${source}\n`,
+              },
+              options.timeoutMs ?? 30_000
+            )
+          : await fetchWithTimeout(
+              `${this.url}/mirror`,
+              {
+                method: 'PUT',
+                headers: {
+                  Authorization: authorization,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ url: source }),
+              },
+              options.timeoutMs ?? 30_000
+            );
+    } catch (error) {
+      const kind = classifyBlossomError(error);
+      throw new BlossomError(
+        describeBlossomError(error, this.name),
+        undefined,
+        undefined,
+        kind,
+        extractBlossomDetail(error)
+      );
+    }
+
+    if (response.status !== 200 && response.status !== 201) {
+      const reason = await readReason(response);
+      throw new BlossomError(
+        `Mirror rejected (HTTP ${response.status})`,
+        response.status,
+        reason,
+        response.status >= 500 ? 'server' : 'policy'
+      );
+    }
+
+    let body: string;
+    try {
+      body = await response.text();
+    } catch {
+      throw new BlossomError('Mirror response could not be read');
+    }
+
+    let descriptor: BlobDescriptor;
+    try {
+      descriptor = parseBlobDescriptor(body, { sha256: options.sha256, size: options.expectedSize });
+    } catch (error) {
+      throw new BlossomError(error instanceof Error ? error.message : 'Mirror response was not a blob descriptor');
+    }
+
+    let verified = await this.verifyBlob(descriptor.url, options.expectedSize);
+    if (!verified) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      verified = await this.verifyBlob(descriptor.url, options.expectedSize);
+    }
     return { provider: this.id, descriptor, verified };
   }
 

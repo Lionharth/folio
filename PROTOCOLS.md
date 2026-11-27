@@ -407,11 +407,27 @@ HTTP `5xx` and a failed blob verification. Each candidate gets its own BUD-11
 token because the `server` tag is origin-bound. An HTTP `4xx` is returned to the
 user and is not retried against a different provider.
 
-Mirroring: after the primary copy verifies, one backup provider is tried with
-the identical ciphertext (and the encrypted cover), excluding the provider that
-actually stored the primary copy. Mirror failures are ignored, and only verified
-copies are included in `mirrors`. Publish → Advanced exposes an on/off toggle,
-persisted as `media.mirrorCopies`, and the backup copy is on by default.
+Mirroring: after the primary copy verifies, every other preset is asked to copy
+the ciphertext server-side. Two equivalent endpoints are supported:
+
+- BUD-04: `PUT /mirror` with `{ "url": "<primary blob url>" }`.
+- BUD-13: `POST /<sha256>` with the primary URL as plain text.
+
+Both use a BUD-11 `upload` token with the ciphertext in an `x` tag and the
+destination host in a `server` tag; the destination pulls the blob and stores
+the exact bytes. The phone never re-uploads the blob. Mirror failures
+(transport, TLS, unsupported endpoint, policy, verification) are ignored, and
+only verified copies are included in `mirrors`. Publish → Advanced exposes an
+on/off toggle, persisted as `media.mirrorCopies`, and mirroring to all servers
+is on by default.
+
+Recipient-assisted mirroring: when a recipient opens a moment and the
+`media.recipientMirror` setting is on, the recipient's device sends the same
+mirror requests to every reachable provider that does not already have the
+clip. The request is signed with the recipient's identity, so the copy belongs
+to the recipient and may count against their provider quota. Successful URLs
+are merged into `clips.mirrors` on that device; other recipients are not
+notified.
 
 ## Relay policy
 

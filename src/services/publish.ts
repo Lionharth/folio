@@ -23,6 +23,7 @@ import { getDatabase } from '../lib/database/db';
 import { listCircleMembers, upsertVlog } from '../lib/database/vlogs';
 import { saveMediaKey, saveThumbnailKey } from '../lib/security/mediaKeys';
 import { prepareVideoForPublish, storeThumbnail } from './media';
+import { mirrorToProviders, type MirrorTargetResult } from './mirrorTargets';
 import type { Circle, Clip, Vlog } from '../types/models';
 
 export type PublishStage =
@@ -56,8 +57,8 @@ export interface PublishVlogInput {
   title?: string;
   description?: string;
   providerUrl: string;
-  /** Extra providers to store the encrypted blob on. Defaults to one. */
-  mirrorCopies?: number;
+  /** Mirror the encrypted blob to every other provider. Defaults to true. */
+  mirrorAll?: boolean;
   onProgress?: (progress: PublishProgress) => void;
 }
 
@@ -122,29 +123,25 @@ type ProviderAttempt =
 
 /**
  * One provider attempt: probe, BUD-06 preflight, BUD-02 upload and HEAD
- * verification. Never throws, so the same routine can back both the primary
- * fallback chain and best-effort mirror uploads.
+ * verification. Never throws, so the primary fallback chain can treat every
+ * candidate the same way.
  */
 async function tryProviderUpload(
   url: string,
   file: File,
   input: ProviderUploadInput,
   report: (progress: PublishProgress) => void,
-  options: { showDetail: boolean; mirror?: boolean; skipProbe?: boolean }
+  options: { showDetail: boolean }
 ): Promise<ProviderAttempt> {
   const client = new BlossomClient(url);
   const detail = options.showDetail ? client.name : undefined;
-  const checkingStage: PublishStage = options.mirror ? 'mirroring' : 'checking-provider';
-  const uploadingStage: PublishStage = options.mirror ? 'mirroring' : 'uploading';
 
-  report({ stage: checkingStage, detail });
+  report({ stage: 'checking-provider', detail });
 
-  if (!options.skipProbe) {
-    const probe = await client.probe();
-    if (!probe.ok) {
-      const kind = probe.kind ?? (probe.status !== undefined && probe.status >= 500 ? 'server' : 'transport');
-      return { ok: false, provider: client.name, failure: { kind, retryable: true } };
-    }
+  const probe = await client.probe();
+  if (!probe.ok) {
+    const kind = probe.kind ?? (probe.status !== undefined && probe.status >= 500 ? 'server' : 'transport');
+    return { ok: false, provider: client.name, failure: { kind, retryable: true } };
   }
 
   const preflight = await client.preflight(input.secretKey, input.size, input.sha256, input.mimeType);
@@ -175,7 +172,7 @@ async function tryProviderUpload(
     };
   }
 
-  report({ stage: uploadingStage, fraction: 0, detail });
+  report({ stage: 'uploading', fraction: 0, detail });
   const uploadOptions: UploadOptions = {
     sha256: input.sha256,
     size: input.size,
@@ -183,7 +180,7 @@ async function tryProviderUpload(
     secretKey: input.secretKey,
     onProgress: ({ bytesSent, totalBytes }) =>
       report({
-        stage: uploadingStage,
+        stage: 'uploading',
         fraction: totalBytes > 0 ? bytesSent / totalBytes : 0,
         detail,
       }),
@@ -303,39 +300,26 @@ async function uploadWithFallback(
   );
 }
 
-interface MirrorUpload {
-  provider: string;
-  url: string;
-}
+/** Keeps a blocked network from holding publish open for the whole pull budget. */
+const MIRROR_PHASE_DEADLINE_MS = 12_000;
 
-/**
- * Best-effort backups. A mirror failure is never fatal: the primary copy is
- * already verified and recipients can still download from it.
- */
-async function uploadMirrors(
-  targets: string[],
-  file: File,
-  input: ProviderUploadInput,
-  report: (progress: PublishProgress) => void,
-  options: { skipProbe?: boolean } = {}
-): Promise<MirrorUpload[]> {
-  const mirrors: MirrorUpload[] = [];
-  for (const url of targets) {
-    const attempt = await tryProviderUpload(url, file, input, report, {
-      showDetail: true,
-      mirror: true,
-      skipProbe: options.skipProbe,
-    });
-    if (attempt.ok) mirrors.push({ provider: attempt.provider, url: attempt.upload.descriptor.url });
+async function withDeadline<T>(promise: Promise<T>, milliseconds: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), milliseconds);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return mirrors;
 }
 
 /**
  * Full publish pipeline: private copy -> SHA-256 -> encrypt -> provider
- * selection (selected, then presets) -> upload -> best-effort mirror ->
- * gift-wrap the media key to every active member -> persist. Media is encrypted
- * before any network operation and plaintext is never uploaded.
+ * selection (selected, then presets) -> upload -> best-effort server-side
+ * mirrors -> gift-wrap the media key to every active member -> persist. Media
+ * is encrypted before any network operation and plaintext is never uploaded.
  */
 export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogResult> {
   const remoteVlogId = randomUUID();
@@ -395,28 +379,29 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
 
     report({ stage: 'verifying' });
 
-    // Recipients only learn blob URLs from the key payload, so backup copies
-    // must exist before distribution. Failures here never fail the publish.
+    // Recipients only learn blob URLs from the key payload, so any copies that
+    // can be made server-side must exist before distribution. Failures here
+    // never fail the publish.
     const mirrorTargets = buildMirrorCandidates(
       provider.url,
       input.providerUrl,
       PROVIDER_PRESETS.map((preset) => preset.url),
-      input.mirrorCopies ?? 1
+      (input.mirrorAll ?? true) ? Number.POSITIVE_INFINITY : 0
     );
-    const videoMirrors =
-      mirrorTargets.length > 0
-        ? await uploadMirrors(
-            mirrorTargets,
-            encryptedFile,
-            {
-              sha256: encrypted.sha256,
-              size: encrypted.encryptedSize,
-              mimeType: 'application/octet-stream',
-              secretKey: input.secretKey,
-            },
-            report
-          )
-        : [];
+    const videoMirrors = await withDeadline(
+      mirrorToProviders(
+        mirrorTargets,
+        {
+          sourceUrl: upload.descriptor.url,
+          sha256: encrypted.sha256,
+          size: encrypted.encryptedSize,
+          secretKey: input.secretKey,
+        },
+        (provider) => report({ stage: 'mirroring', detail: provider })
+      ),
+      MIRROR_PHASE_DEADLINE_MS,
+      [] as MirrorTargetResult[]
+    );
     const mirrorUrls = sanitizeMirrorUrls(videoMirrors.map((mirror) => mirror.url));
 
     let thumbnail: VlogThumbnailPayload | undefined;
@@ -435,17 +420,19 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
         if (thumbnailUpload.verified) {
           const coverMirrorUrls: string[] = [];
           if (videoMirrors.length > 0) {
-            const coverMirrors = await uploadMirrors(
-              videoMirrors.map((mirror) => mirror.provider),
-              encryptedThumbnailFile,
-              {
-                sha256: sealedThumbnail.sha256,
-                size: sealedThumbnail.encryptedSize,
-                mimeType: 'application/octet-stream',
-                secretKey: input.secretKey,
-              },
-              report,
-              { skipProbe: true }
+            const coverMirrors = await withDeadline(
+              mirrorToProviders(
+                videoMirrors.map((mirror) => mirror.provider),
+                {
+                  sourceUrl: thumbnailUpload.descriptor.url,
+                  sha256: sealedThumbnail.sha256,
+                  size: sealedThumbnail.encryptedSize,
+                  secretKey: input.secretKey,
+                },
+                (provider) => report({ stage: 'mirroring', detail: provider })
+              ),
+              MIRROR_PHASE_DEADLINE_MS,
+              [] as MirrorTargetResult[]
             );
             coverMirrorUrls.push(...sanitizeMirrorUrls(coverMirrors.map((mirror) => mirror.url)));
           }
