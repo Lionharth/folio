@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import { Alert, FlatList, Pressable, RefreshControl, View } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import Feather from '@expo/vector-icons/Feather';
@@ -82,8 +82,21 @@ export default function CirclesScreen() {
   }, [queryClient, identity]);
 
   const sync = useCallback(async () => {
-    if (identity) await syncInbox(identity, queryClient);
+    if (identity) await syncInbox(identity, queryClient, { fast: true });
   }, [identity, syncInbox, queryClient]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!identity) return;
+      const last = useInboxSync.getState().lastResult;
+      if (!last || Date.now() - last.completedAt > 30_000) {
+        void useInboxSync
+          .getState()
+          .sync(identity, queryClient, { fast: true })
+          .catch(() => undefined);
+      }
+    }, [identity, queryClient])
+  );
 
   const accept = async (invite: CircleInvite) => {
     if (!identity) return;
@@ -129,7 +142,10 @@ export default function CirclesScreen() {
   };
 
   const syncPresentation =
-    syncIdentityId === identity?.id && lastResult && (lastAction === 'manual' || !lastResult.allRelaysComplete)
+    syncIdentityId === identity?.id &&
+    lastResult &&
+    lastAction !== 'live' &&
+    (lastAction === 'manual' || !lastResult.allRelaysComplete)
       ? presentInboxSync(lastResult, 'circles')
       : null;
   const currentSyncError = syncIdentityId === identity?.id ? syncError : null;

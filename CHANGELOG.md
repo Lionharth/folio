@@ -1,28 +1,19 @@
 # Changelog
 
-## 0.1.1
+## 0.1.3
 
 ### Added
 
-- Publishing falls back across storage providers. The selected Blossom server is
-  tried first, then the remaining presets; transport/TLS failures, HTTP 5xx and
-  a failed blob verification move to the next candidate, while a 4xx policy
-  rejection is shown with the provider's own reason. Network requests are
-  time-bounded.
-
-### Fixed
-
-- A storage provider with an untrusted or expired certificate no longer surfaces
-  the raw `FileSystemUploadTask.start` rejected-promise text. The publish flow
-  detects the TLS failure, skips that provider, and reports an actionable
-  message if no provider can be trusted.
-- Android release builds no longer crash on launch. R8 was stripping the
-  reflective Room constructor used by WorkManager, so minified releases now
-  keep `RoomDatabase` constructors through `expo-build-properties`.
-
-## Unreleased
-
-### Added
+- Peer-to-peer invite pushes for contacts whose Expo token is already known from
+  any shared circle. The push is generic and routes to Circles; cold invites from
+  strangers still wait for the background check.
+- Foreground inbox subscriptions to the active identity's relay set, so new
+  invitations, moments, comments and reactions appear without pull-to-refresh
+  while the app is open.
+- Fast refresh mode for pull-to-refresh and the check buttons: a 2.5-second
+  per-relay timeout and 4-second total budget, with partial results kept visible.
+  The app also runs a fast sync when returning to the foreground or opening
+  Circles.
 
 - Create → Record now opens the OS video-capture screen: a modal camera sheet on
   iOS and the installed camera app's capture screen on Android. Recording no
@@ -40,9 +31,37 @@
 - A "Mirror received media" setting (Profile → Advanced, on by default) lets a
   recipient ask other storage servers to keep a copy of a moment they open,
   without re-uploading the ciphertext from any phone.
+- Peer-to-peer remote push through Expo Push Service. Devices exchange Expo push
+  tokens inside encrypted NIP-17 `push-token` control messages scoped to one
+  circle, and the publishing device calls Expo's HTTP API directly for new
+  moments, comments, replies and reactions. No application server is introduced.
+- Push registration handles token rotation, announces `enabled: false` when
+  notifications are turned off or permission is revoked, prunes stale tokens and
+  deletes tokens Expo reports as `DeviceNotRegistered`. Each token also carries
+  the New moments / Replies and reactions preferences and the circle's mute
+  state, so senders skip muted circles and disabled event families.
+- Remote pushes carry only generic copy plus a remote moment id. The new `/open`
+  route syncs and resolves that id to the recipient's local vlog before opening
+  it, so local ids never leak between devices.
+- A push received while JS is running records its remote id for six hours
+  (moments) or fifteen minutes (social threads), so a later background check does
+  not schedule the same banner again. This dedupe is best-effort because a
+  killed process cannot write the marker.
+- Protocol lab shows the Expo push token and setup state and can send a remote
+  test push. `app.json` links the EAS project and enables the iOS
+  remote-notification entitlement; local notifications still work without FCM
+  credentials.
+- Linked EAS project `@theshadymooncat/folio` and committed its project id.
+  `app.config.js` adds the Firebase `google-services.json` only when present, and
+  the GitHub Actions release workflow now injects that file from the
+  `GOOGLE_SERVICES_JSON` secret, validates the `life.folio.app` package, and
+  verifies the Gradle Google Services plugin before building.
 
 ### Changed
 
+- Notifications now describe remote delivery separately from 15-minute background
+  checks. The `expo-notifications` plugin enables the iOS remote-notification
+  entitlement and a `moments` Android default channel.
 - Tapping a circle now opens a moments-only feed. Circle details, the People
   list and invitations moved to a separate page opened from the feed header.
 - Create → Advanced "Backup copy" is now "Mirror to all servers" and covers
@@ -50,10 +69,43 @@
 - Circles is a compact chat-style list: each circle is a row with its picture on
   the left and name on the right, so more circles fit on screen.
 
+### Fixed
+
+- Push registration and control-outbox writes are serialized, and outbox inserts
+  use an exclusive transaction. Repeatedly toggling notifications no longer
+  produces `cannot commit - no transaction is active`.
+- Enabling notifications no longer leaves the screen disabled while Expo token
+  registration is pending; the token request times out after 15 seconds and
+  local notification setup completes independently.
+- The background task now allows incremental notifications once a sync cursor
+  exists instead of requiring every relay backfill to finish, so one bad relay
+  cannot suppress notifications forever.
+- Remote notification dedupe now covers invitation pushes by circle id.
+- Backfilled moments, invitations and membership changes no longer create
+  notifications; only events from the incremental window do.
+- Live and fast syncs no longer block the initial bootstrap, and token-request
+  responses are deduplicated and flushed even on the fast path.
+- A device with multiple identities receives one push per event, with all
+  eligible viewer identities in the payload.
+- EAS builds fail fast when the Firebase client config is missing, and accepting
+  an invitation no longer waits for push token announcement.
+- Expo push ticket errors are surfaced in the notifications screen, including
+  missing FCM server credentials.
+
 ### Removed
 
 - The in-app `expo-camera` recorder, its `/capture` route and the capture
   Zustand store. `expo-camera` remains for QR scanning.
+
+### Testing
+
+- Notifications settings now include a release-visible diagnostics line and
+  buttons for a local test notification, an inbox check and a remote test push.
+  Test notifications are allowed to display while the app is in the foreground.
+- The remote test push checks the Expo receipt after sending and reports a
+  delivery error instead of only the ticket acceptance. Verified locally on an
+  Android 36 emulator: local and remote test notifications both post on the
+  `moments` channel.
 
 ## 0.1.2
 
@@ -255,6 +307,27 @@
   "1 invitation found"; the circle was hidden until B accepted. After accepting,
   B saw the circle. A's next sync reported "Membership updated" and B became
   `member · active`.
+
+## 0.1.1
+
+### Added
+
+- Publishing falls back across storage providers. The selected Blossom server is
+  tried first, then the remaining presets; transport/TLS failures, HTTP 5xx and
+  a failed blob verification move to the next candidate, while a 4xx policy
+  rejection is shown with the provider's own reason. Network requests are
+  time-bounded.
+
+### Fixed
+
+- A storage provider with an untrusted or expired certificate no longer surfaces
+  the raw `FileSystemUploadTask.start` rejected-promise text. The publish flow
+  detects the TLS failure, skips that provider, and reports an actionable
+  message if no provider can be trusted.
+- Android release builds no longer crash on launch. R8 was stripping the
+  reflective Room constructor used by WorkManager, so minified releases now
+  keep `RoomDatabase` constructors through `expo-build-properties`.
+
 
 ## 0.1.0 — Phase 0/1 feasibility build
 

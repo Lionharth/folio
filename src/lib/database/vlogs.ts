@@ -1,4 +1,8 @@
 import { getDatabase } from './db';
+import {
+  deletePushTokensForCircle,
+  deletePushTokensForCircleMember,
+} from './pushTokens';
 import { buildVlogListWhere, type ListVlogsOptions } from './vlogQuery';
 import type { Circle, CircleMember, Clip, Vlog } from '../../types/models';
 
@@ -197,6 +201,7 @@ export async function markCircleMemberRemoved(circleId: string, pubkey: string):
     pubkey
   );
   await db.runAsync('UPDATE circles SET updated_at = ? WHERE id = ?', Date.now(), circleId);
+  await deletePushTokensForCircle(pubkey, circleId);
   return true;
 }
 
@@ -322,6 +327,7 @@ export async function removeCircleMember(circleId: string, pubkey: string): Prom
   const now = Date.now();
   await db.runAsync('UPDATE circle_members SET status = ? WHERE circle_id = ? AND pubkey = ?', 'removed', circleId, pubkey);
   await db.runAsync('UPDATE circles SET membership_version = membership_version + 1, updated_at = ? WHERE id = ?', now, circleId);
+  await deletePushTokensForCircleMember(circleId, pubkey);
 }
 
 export async function applyCircleRosterUpdate(input: {
@@ -344,6 +350,7 @@ export async function applyCircleRosterUpdate(input: {
   if (!roster.has(input.selfPubkey)) return false;
 
   const now = Date.now();
+  const removedPubkeys = new Set<string>();
   await db.withTransactionAsync(async () => {
     await db.runAsync(
       'UPDATE circles SET name = ?, description = ?, membership_version = ?, updated_at = ? WHERE id = ?',
@@ -359,6 +366,7 @@ export async function applyCircleRosterUpdate(input: {
     );
     for (const row of current) {
       if (row.pubkey !== input.ownerPubkey && !roster.has(row.pubkey)) {
+        removedPubkeys.add(row.pubkey);
         await db.runAsync(
           "UPDATE circle_members SET status = 'removed' WHERE circle_id = ? AND pubkey = ?",
           input.id,
@@ -379,6 +387,9 @@ export async function applyCircleRosterUpdate(input: {
       );
     }
   });
+  for (const pubkey of removedPubkeys) {
+    await deletePushTokensForCircleMember(input.id, pubkey);
+  }
   return true;
 }
 

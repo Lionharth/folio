@@ -101,7 +101,7 @@ UI only ever shows a display name and a shortened npub.
 `settings`, `relays`, `media_providers`, `circles`, `circle_members`, `vlogs`,
 `clips`, `drafts`, `draft_clips`, `upload_jobs`, `favourites`, `circle_invites`,
 `contact_profiles`, `circle_memberships`, `control_outbox`, `comments`,
-`reactions`, `activity`, `inbox_sync_state`, `inbox_relay_state`.
+`reactions`, `activity`, `inbox_sync_state`, `inbox_relay_state`, `push_tokens`.
 
 Migrations use `PRAGMA user_version`; schema version 2 adds
 `vlogs.viewer_pubkey`, version 3 adds `circle_invites`, version 4 adds
@@ -109,8 +109,9 @@ Migrations use `PRAGMA user_version`; schema version 2 adds
 invitations to a recipient and adds durable membership receipts plus the control
 outbox, version 7 adds encrypted comments, reactions and the inbox cursor,
 version 8 adds per-relay sync state and the remote-vlog lookup index, version 9
-adds the unread-count index used by the Updates tab badge, and version 10 adds
-the local `activity` table used by the Inbox.
+adds the unread-count index used by the Updates tab badge, version 10 adds
+the local `activity` table used by the Inbox, version 11 adds the viewer/author
+index, and version 12 adds the per-circle Expo push token cache.
 
 Design choices:
 - Every vlog row belongs to a viewer identity (`viewer_pubkey`). Local ids are
@@ -317,15 +318,47 @@ and no resumable upload state in `upload_jobs`.
 ## Notifications
 
 Folio generates local OS notifications after an inbox sync applies a durable
-transition. There is no remote push service, FCM/APNs credential, Expo push
-token or notification-specific relay payload.
+transition, and also supports peer-to-peer remote push through Expo Push Service.
+There is still no application server: publishing devices call Expo's HTTP API
+directly and Expo hands the payload to FCM/APNs.
 
-- Only the active identity is synced and notified. The background worker reads
-  the active identity on every run.
-- Device-level preferences live in `settings` under `notifications.*`: a master
-  switch plus New moments, Replies and reactions, Invitations and Membership
-  toggles. Effective notifications require both the master setting and OS
-  permission.
+- Expo push tokens are obtained on the device with an EAS project id. Each token
+  is announced inside a NIP-17 `push-token` control message scoped to one circle;
+  peers store it in `push_tokens` (schema version 12). The same control carries
+  the sender's New moments / Replies and reactions / Invitations preferences and
+  that circle's local mute state. A `push-token-request` asks members to send
+  their tokens, and disabling notifications announces the token with
+  `enabled: false` so peers delete it.
+- Token exchange reuses the existing gift-wrap inbox. Relays never see a token,
+  and a token is shared only with active members of the circle it names.
+- After publishing a moment, the author's device sends a generic Expo push to the
+  tokens of that circle's members that are not muted and still allow New moments.
+  Comments and reactions follow the same rule for Replies and reactions.
+- An invitation for a new circle reuses a token the owner already learned from
+  any shared circle, so existing contacts get an instant generic invitation
+  push. A cold invitation from someone with no shared circle has no token and
+  remains on the background-check path. Invitations and membership changes do not
+  create a new token exchange.
+- Push payloads contain no moment titles, names, circle names, emojis or comment
+  bodies. They carry generic copy, a remote moment id or target circle id, and the
+  recipient identity, then route through `/open` or `/circles`.
+- A remote push received while JS is running records its remote id or invite
+  circle for a short time, and local notification building skips those ids. The
+  marker cannot be written after process death, so a later background check may
+  still duplicate a push that arrived while Folio was killed.
+- While the app is active, a live `kind: 1059` subscription on the active
+  identity's inbox relays wakes a debounced fast sync. Fast sync is incremental,
+  uses a 2.5-second per-relay timeout and a 4-second total budget, and skips
+  backfill and outbox flushes. Pull-to-refresh and the check buttons use the same
+  fast path; bootstrap and background sync keep the full budget.
+- Remote push is best-effort: the author's app must be alive to publish, Expo and
+  FCM/APNs have no delivery SLA, and a token is a bearer capability. Removed
+  members keep tokens they already received, and a mute or preference change is
+  only visible to peers after the next token announcement.
+- Only the active identity is synced, notified, and registered for push. Device
+  preferences live in `settings` under `notifications.*`: a master switch plus
+  New moments, Replies and reactions, Invitations and Membership toggles.
+  Effective notifications require both the master setting and OS permission.
 - Social notification events come from activity rows created during the sync.
   A single event gets action-specific copy; multiple events on one moment are
   grouped as `N new responses` and route to the expanded conversation.
@@ -344,8 +377,9 @@ token or notification-specific relay payload.
 - Background runs skip while the foreground holds the sync lock. The lock is a
   TTL-based JSON value in `settings`, so a killed process cannot deadlock the
   next launch.
-- Notification content carries only a routing URL. Circle and author names are
-  still visible on the lock screen and in notification history; comment bodies
+- Local notification content carries only a routing URL. Remote push carries only
+  generic copy and a remote id. Circle and author names are still visible in local
+  notifications on the lock screen and in notification history; comment bodies
   are never included, and reactions show only the emoji symbol. That trade-off is
   documented in SECURITY.md.
 - On iOS, a locked keychain can prevent a background run from reading the secret

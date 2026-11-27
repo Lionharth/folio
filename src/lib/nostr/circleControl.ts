@@ -1,6 +1,7 @@
 import { createRumor, createSeal, createWrap } from 'nostr-tools/nip59';
 import { getPublicKey, type Event } from 'nostr-tools/pure';
 
+import { isExpoPushToken, type PushPlatform } from '../notifications/push';
 import { parseSocialControl, type SocialControlPayload } from './socialControl';
 
 export const KIND_PRIVATE_MESSAGE = 14;
@@ -36,6 +37,41 @@ export interface CircleAcceptPayload {
 
 export type MembershipAction = 'join' | 'decline' | 'removed';
 
+export interface PushNotificationPreferences {
+  posts: boolean;
+  activity: boolean;
+  invites: boolean;
+}
+
+/**
+ * Device push capability shared only with members of one circle. The token is a
+ * bearer capability, so it travels inside the same NIP-17 wraps as other
+ * control messages and is scoped to a single circle id.
+ */
+export interface PushTokenPayload {
+  v: 1;
+  type: 'push-token';
+  circleId: string;
+  token: string;
+  platform: PushPlatform;
+  deviceId: string;
+  /** False when the device has notifications disabled or permission revoked. */
+  enabled: boolean;
+  /** Whether the sender wants remote posts and social activity for this circle. */
+  preferences: PushNotificationPreferences;
+  /** The sender's local mute state for this circle. */
+  muted: boolean;
+  at: number;
+}
+
+/** Asks current members of one circle to send their push tokens back. */
+export interface PushTokenRequestPayload {
+  v: 1;
+  type: 'push-token-request';
+  circleId: string;
+  at: number;
+}
+
 /**
  * Durable membership evidence. Accepted, declined and removed circles publish
  * this to the member's own inbox so a new device can restore or suppress the
@@ -58,6 +94,8 @@ export type CircleControlPayload =
   | CircleInvitePayload
   | CircleAcceptPayload
   | CircleMembershipPayload
+  | PushTokenPayload
+  | PushTokenRequestPayload
   | SocialControlPayload;
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -194,6 +232,60 @@ export function parseControlPayload(tags: string[][]): CircleControlPayload | nu
       circleId: value.circleId,
       memberPubkey: value.memberPubkey,
       memberName: normalizeName(value.memberName),
+      at: value.at,
+    };
+  }
+
+  if (value.type === 'push-token') {
+    if (!isNonEmptyString(value.circleId, 120)) return null;
+    if (!isExpoPushToken(value.token)) return null;
+    if (value.platform !== 'android' && value.platform !== 'ios') return null;
+    if (typeof value.deviceId !== 'string' || !/^[A-Za-z0-9._:-]{8,80}$/.test(value.deviceId)) return null;
+    if (typeof value.enabled !== 'boolean') return null;
+    if (typeof value.at !== 'number' || !Number.isFinite(value.at) || value.at <= 0) return null;
+
+    let muted = false;
+    if (value.muted !== undefined) {
+      if (typeof value.muted !== 'boolean') return null;
+      muted = value.muted;
+    }
+    let preferences: PushNotificationPreferences = { posts: true, activity: true, invites: true };
+    if (value.preferences !== undefined) {
+      if (!value.preferences || typeof value.preferences !== 'object' || Array.isArray(value.preferences)) {
+        return null;
+      }
+      const raw = value.preferences as Record<string, unknown>;
+      if (raw.posts !== undefined && typeof raw.posts !== 'boolean') return null;
+      if (raw.activity !== undefined && typeof raw.activity !== 'boolean') return null;
+      if (raw.invites !== undefined && typeof raw.invites !== 'boolean') return null;
+      preferences = {
+        posts: raw.posts !== false,
+        activity: raw.activity !== false,
+        invites: raw.invites !== false,
+      };
+    }
+
+    return {
+      v: 1,
+      type: 'push-token',
+      circleId: value.circleId,
+      token: value.token,
+      platform: value.platform,
+      deviceId: value.deviceId,
+      enabled: value.enabled,
+      preferences,
+      muted,
+      at: value.at,
+    };
+  }
+
+  if (value.type === 'push-token-request') {
+    if (!isNonEmptyString(value.circleId, 120)) return null;
+    if (typeof value.at !== 'number' || !Number.isFinite(value.at) || value.at <= 0) return null;
+    return {
+      v: 1,
+      type: 'push-token-request',
+      circleId: value.circleId,
       at: value.at,
     };
   }

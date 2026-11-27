@@ -103,7 +103,7 @@ export default function UpdatesScreen() {
   };
 
   const sync = useCallback(async () => {
-    if (identity) await syncInbox(identity, queryClient);
+    if (identity) await syncInbox(identity, queryClient, { fast: true });
   }, [identity, syncInbox, queryClient]);
 
   const vlogs = useMemo(() => vlogsQuery.data?.pages.flat() ?? [], [vlogsQuery.data]);
@@ -119,7 +119,10 @@ export default function UpdatesScreen() {
   const nameFor = (pubkey: string) =>
     pubkey === identity?.pubkey ? (identity?.label ?? 'You') : (contactsQuery.data?.[pubkey] ?? shortNpub(pubkey));
   const syncPresentation =
-    syncIdentityId === identity?.id && lastResult && (lastAction === 'manual' || !lastResult.allRelaysComplete)
+    syncIdentityId === identity?.id &&
+    lastResult &&
+    lastAction !== 'live' &&
+    (lastAction === 'manual' || !lastResult.allRelaysComplete)
       ? presentInboxSync(lastResult, 'updates')
       : null;
   const currentSyncError = syncIdentityId === identity?.id ? syncError : null;

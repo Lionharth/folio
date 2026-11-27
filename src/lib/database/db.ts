@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 
 const DATABASE_NAME = 'folio.db';
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 let database: SQLite.SQLiteDatabase | null = null;
 let opening: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -309,6 +309,28 @@ CREATE INDEX IF NOT EXISTS vlogs_viewer_author_idx
   ON vlogs (viewer_pubkey, author_pubkey, created_at DESC);
 `;
 
+const MIGRATION_12_TABLES = `
+CREATE TABLE IF NOT EXISTS push_tokens (
+  viewer_pubkey TEXT NOT NULL,
+  owner_pubkey TEXT NOT NULL,
+  circle_id TEXT NOT NULL,
+  device_id TEXT NOT NULL,
+  token TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  allow_posts INTEGER NOT NULL DEFAULT 1,
+  allow_activity INTEGER NOT NULL DEFAULT 1,
+  allow_invites INTEGER NOT NULL DEFAULT 1,
+  muted INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (viewer_pubkey, owner_pubkey, circle_id, device_id)
+);
+
+CREATE INDEX IF NOT EXISTS push_tokens_circle_idx
+  ON push_tokens (viewer_pubkey, circle_id, owner_pubkey);
+CREATE INDEX IF NOT EXISTS push_tokens_token_idx
+  ON push_tokens (token);
+`;
+
 async function addColumnIfMissing(
   db: SQLite.SQLiteDatabase,
   table: string,
@@ -378,6 +400,15 @@ async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
   if (current < 11) {
     await db.execAsync(MIGRATION_11_INDEXES);
   }
+  if (current < 12) {
+    await db.execAsync(MIGRATION_12_TABLES);
+  }
+  // Covers databases created by an interim v12 build before the notification
+  // preference and mute columns were added.
+  await addColumnIfMissing(db, 'push_tokens', 'allow_posts', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumnIfMissing(db, 'push_tokens', 'allow_activity', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumnIfMissing(db, 'push_tokens', 'allow_invites', 'INTEGER NOT NULL DEFAULT 1');
+  await addColumnIfMissing(db, 'push_tokens', 'muted', 'INTEGER NOT NULL DEFAULT 0');
   await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION};`);
 }
 

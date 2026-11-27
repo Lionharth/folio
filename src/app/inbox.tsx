@@ -65,7 +65,7 @@ export default function InboxScreen() {
 
   const refresh = useCallback(async () => {
     if (!identity) return;
-    await syncInbox(identity, queryClient);
+    await syncInbox(identity, queryClient, { fast: true });
     await markRead();
   }, [identity, queryClient, syncInbox, markRead]);
 

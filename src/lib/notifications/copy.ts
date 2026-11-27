@@ -20,6 +20,8 @@ export interface NotificationPreferences {
 export interface InboxMomentEvent {
   /** Local vlog id, including the viewer prefix used by `/vlog/[id]`. */
   vlogId: string;
+  /** Author's remote id; used to suppress a duplicate after a remote push. */
+  remoteId?: string;
   circleId: string;
   circleName: string | null;
   authorPubkey: string;
@@ -43,6 +45,7 @@ export interface InboxMembershipEvent {
 
 export interface InboxSocialEvent {
   vlogId: string;
+  remoteId?: string;
   circleId: string;
   circleName: string | null;
   actorPubkey: string;
@@ -62,13 +65,19 @@ export interface NotificationRequest {
   channel: 'moments' | 'circles' | 'social';
   title: string;
   body: string;
-  data: { url: string };
+  data: { url: string; test?: boolean };
 }
 
 export interface BuildInboxNotificationsInput {
   events: InboxNotificationEvents;
   preferences: NotificationPreferences;
   mutedCircleIds: Iterable<string>;
+  /** Moment remote ids already covered by a remote push on this device. */
+  remoteNotifiedMomentIds?: Iterable<string>;
+  /** Thread remote ids covered by a recent remote social push. */
+  remoteNotifiedSocialIds?: Iterable<string>;
+  /** Circle ids covered by a recent remote invitation push. */
+  remoteNotifiedInviteCircleIds?: Iterable<string>;
   names: Record<string, string | undefined>;
   viewerPubkey: string;
 }
@@ -102,10 +111,16 @@ export function buildInboxNotifications({
   events,
   preferences,
   mutedCircleIds,
+  remoteNotifiedMomentIds,
+  remoteNotifiedSocialIds,
+  remoteNotifiedInviteCircleIds,
   names,
   viewerPubkey,
 }: BuildInboxNotificationsInput): NotificationRequest[] {
   const muted = new Set(mutedCircleIds);
+  const remoteMoments = new Set(remoteNotifiedMomentIds);
+  const remoteSocial = new Set(remoteNotifiedSocialIds);
+  const remoteInvites = new Set(remoteNotifiedInviteCircleIds);
   const requests: NotificationRequest[] = [];
 
   if (preferences.posts) {
@@ -113,6 +128,7 @@ export function buildInboxNotifications({
     for (const event of events.moments) {
       if (event.authorPubkey === viewerPubkey) continue;
       if (muted.has(event.circleId)) continue;
+      if (event.remoteId && remoteMoments.has(event.remoteId)) continue;
       const list = groups.get(event.circleId) ?? [];
       list.push(event);
       groups.set(event.circleId, list);
@@ -150,6 +166,7 @@ export function buildInboxNotifications({
   if (preferences.invites) {
     for (const event of events.invites) {
       if (muted.has(event.circleId)) continue;
+      if (remoteInvites.has(event.circleId)) continue;
       const name = circleName(event.circleName);
       const owner = personName(event.ownerPubkey, event.ownerName, names);
       requests.push({
@@ -189,6 +206,7 @@ export function buildInboxNotifications({
     for (const event of events.social) {
       if (event.actorPubkey === viewerPubkey) continue;
       if (muted.has(event.circleId)) continue;
+      if (event.remoteId && remoteSocial.has(event.remoteId)) continue;
       const list = groups.get(event.vlogId) ?? [];
       list.push(event);
       groups.set(event.vlogId, list);

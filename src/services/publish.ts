@@ -24,6 +24,7 @@ import { listCircleMembers, upsertVlog } from '../lib/database/vlogs';
 import { saveMediaKey, saveThumbnailKey } from '../lib/security/mediaKeys';
 import { prepareVideoForPublish, storeThumbnail } from './media';
 import { mirrorToProviders, type MirrorTargetResult } from './mirrorTargets';
+import { notifyMomentPublishedAsync } from './push';
 import type { Circle, Clip, Vlog } from '../types/models';
 
 export type PublishStage =
@@ -552,6 +553,15 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
       createdAt: now,
     };
     await upsertVlog(vlog, [clip]);
+
+    // Remote delivery is best-effort: the key wraps and local row are already
+    // durable, so a push failure must never fail publishing.
+    void notifyMomentPublishedAsync({
+      viewerPubkey: senderPubkey,
+      circleId: input.circle.id,
+      remoteId: remoteVlogId,
+      recipientPubkeys,
+    }).catch(() => undefined);
 
     return {
       vlogId: localVlogId,

@@ -35,6 +35,7 @@ import {
   normalizeEmoji,
   normalizeSocialName,
 } from '../lib/social/rules';
+import { notifySocialActivityAsync } from './push';
 import type { Activity, Circle, CircleMember, Comment, Vlog } from '../types/models';
 
 export class SocialError extends Error {
@@ -251,6 +252,7 @@ export async function createComment(input: {
   const body = normalizeCommentBody(input.body);
   if (!body) throw new SocialError('Write something first');
 
+  let replyTargetAuthor: string | null = null;
   if (input.replyToId) {
     const target = await getComment(selfPubkey, input.replyToId);
     if (!target || target.placeholder) throw new SocialError('That comment is no longer available');
@@ -258,6 +260,7 @@ export async function createComment(input: {
       throw new SocialError('That comment belongs to another vlog');
     }
     if (target.deletedAt) throw new SocialError('That comment was deleted');
+    replyTargetAuthor = target.authorPubkey;
   }
 
   const authorName = normalizeSocialName(input.authorName) ?? undefined;
@@ -277,6 +280,27 @@ export async function createComment(input: {
     if (authorName) await upsertContactName(selfPubkey, authorName);
   });
   deliverQueued(input.secretKey, queued, payload);
+
+  const pushRecipients = [
+    { pubkey: input.vlog.authorPubkey, category: 'comment' as const, targetType: 'vlog' as const },
+    ...(replyTargetAuthor
+      ? [
+          {
+            pubkey: replyTargetAuthor,
+            category: 'reply' as const,
+            targetType: 'comment' as const,
+          },
+        ]
+      : []),
+  ].filter((recipient) => recipient.pubkey !== selfPubkey);
+  if (pushRecipients.length > 0) {
+    void notifySocialActivityAsync({
+      viewerPubkey: selfPubkey,
+      circleId,
+      remoteId: input.vlog.remoteId,
+      recipients: pushRecipients,
+    }).catch(() => undefined);
+  }
 
   const created = await getComment(selfPubkey, payload.commentId);
   if (!created) throw new SocialError('The comment could not be saved');
@@ -382,6 +406,7 @@ export async function setReaction(input: {
     throw new SocialError('That vlog does not match');
   }
 
+  let targetAuthor: string | null = input.targetType === 'vlog' ? input.vlog.authorPubkey : null;
   if (input.targetType === 'comment') {
     const target = await getComment(selfPubkey, input.targetId);
     if (!target || target.placeholder) throw new SocialError('That comment is no longer available');
@@ -389,6 +414,7 @@ export async function setReaction(input: {
       throw new SocialError('That comment belongs to another vlog');
     }
     if (input.active && target.deletedAt) throw new SocialError('That comment was deleted');
+    targetAuthor = target.authorPubkey;
   }
 
   if (input.active) {
@@ -421,6 +447,21 @@ export async function setReaction(input: {
     if (authorName) await upsertContactName(selfPubkey, authorName);
   });
   deliverQueued(input.secretKey, queued, payload);
+
+  if (input.active && targetAuthor && targetAuthor !== selfPubkey) {
+    void notifySocialActivityAsync({
+      viewerPubkey: selfPubkey,
+      circleId,
+      remoteId: input.vlog.remoteId,
+      recipients: [
+        {
+          pubkey: targetAuthor,
+          category: 'reaction',
+          targetType: input.targetType,
+        },
+      ],
+    }).catch(() => undefined);
+  }
 }
 
 export interface SocialApplyResult {

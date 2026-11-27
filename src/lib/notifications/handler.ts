@@ -5,10 +5,13 @@ import * as Notifications from 'expo-notifications';
  * count still update, but no banner, list entry or sound is presented.
  */
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowBanner: false,
-    shouldShowList: false,
-    shouldPlaySound: false,
-    shouldSetBadge: false,
-  }),
+  handleNotification: async (notification) => {
+    const isTest = notification.request.content.data?.test === true;
+    return {
+      shouldShowBanner: isTest,
+      shouldShowList: isTest,
+      shouldPlaySound: isTest,
+      shouldSetBadge: false,
+    };
+  },
 });

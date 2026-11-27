@@ -21,8 +21,17 @@ import {
   getNotificationPreferences,
   reconcileNotificationRuntimeAsync,
   requestNotificationPermissionAsync,
+  sendTestNotificationAsync,
   setNotificationPreference,
 } from '../services/notifications';
+import { runInboxNotificationCheckAsync } from '../lib/notifications/backgroundTask';
+import {
+  getPushDebugStateAsync,
+  sendRemoteTestPushAsync,
+  syncPushRegistrationAsync,
+  announcePushTokenToCircleAsync,
+} from '../services/push';
+import { readSecretKey } from '../lib/nostr/identity';
 import { useSession } from '../stores/session';
 import { useTheme } from '../theme/ThemeProvider';
 
@@ -39,6 +48,9 @@ export default function NotificationsScreen() {
     status: BackgroundTask.BackgroundTaskStatus | null;
     registered: boolean;
   }>({ status: null, registered: false });
+  const [pushState, setPushState] = useState<Awaited<
+    ReturnType<typeof getPushDebugStateAsync>
+  > | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
 
@@ -50,18 +62,20 @@ export default function NotificationsScreen() {
 
   const refreshStatus = useCallback(async () => {
     try {
-      const [stored, granted, background] = await Promise.all([
+      const [stored, granted, background, push] = await Promise.all([
         getNotificationPreferences(),
         getNotificationPermissionAsync(),
         getInboxBackgroundTaskStateAsync(),
+        getPushDebugStateAsync(identity),
       ]);
       setPreferences(stored);
       setPermission(granted);
       setTaskState(background);
+      setPushState(push);
     } catch {
       // Keep the last known state; the settings screen remains usable.
     }
-  }, []);
+  }, [identity]);
 
   useFocusEffect(
     useCallback(() => {
@@ -87,7 +101,10 @@ export default function NotificationsScreen() {
       await setNotificationPreference('enabled', value);
       if (value) await requestNotificationPermissionAsync();
       await reconcileNotificationRuntimeAsync();
-      await refreshStatus();
+      if (identity) {
+        void syncPushRegistrationAsync(identity, { force: true }).catch(() => undefined);
+      }
+      void refreshStatus();
     } catch (error) {
       setNotice({
         message: error instanceof Error ? error.message : 'Notification settings could not be saved',
@@ -105,11 +122,72 @@ export default function NotificationsScreen() {
     try {
       await setNotificationPreference(preference, value);
       setPreferences((current) => (current ? { ...current, [preference]: value } : current));
+      if (identity) {
+        void syncPushRegistrationAsync(identity, { force: true }).catch(() => undefined);
+      }
     } catch (error) {
       setNotice({
         message: error instanceof Error ? error.message : 'Notification settings could not be saved',
         tone: 'error',
       });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runNotificationTest = async () => {
+    if (busy) return;
+    setBusy('test');
+    setNotice(null);
+    try {
+      if (!permission) {
+        setNotice({ message: 'Grant notification permission first.', tone: 'warning' });
+        return;
+      }
+      const scheduled = await sendTestNotificationAsync();
+      setNotice({
+        message: scheduled
+          ? 'Test notification sent.'
+          : 'The system refused to schedule the test notification.',
+        tone: scheduled ? 'success' : 'error',
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runInboxCheck = async () => {
+    if (busy) return;
+    setBusy('check');
+    setNotice(null);
+    try {
+      if (!preferences?.enabled || !permission) {
+        setNotice({ message: 'Enable notifications and grant permission first.', tone: 'warning' });
+        return;
+      }
+      await runInboxNotificationCheckAsync();
+      setNotice({
+        message: 'Inbox check finished. New events should have notified.',
+        tone: 'success',
+      });
+      void refreshStatus();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const runRemoteTest = async () => {
+    if (busy) return;
+    setBusy('remote');
+    setNotice(null);
+    try {
+      if (!permission || !preferences?.enabled) {
+        setNotice({ message: 'Enable notifications and grant permission first.', tone: 'warning' });
+        return;
+      }
+      const result = await sendRemoteTestPushAsync(identity);
+      setNotice({ message: result, tone: 'neutral' });
+      void refreshStatus();
     } finally {
       setBusy(null);
     }
@@ -121,6 +199,11 @@ export default function NotificationsScreen() {
     setNotice(null);
     try {
       await setCircleMuted(circleId, muted);
+      if (identity) {
+        void readSecretKey(identity.id)
+          .then((secretKey) => announcePushTokenToCircleAsync(secretKey, circleId))
+          .catch(() => undefined);
+      }
       if (identity) {
         await Promise.all([
           invalidateCircles(queryClient, identity.pubkey),
@@ -151,7 +234,7 @@ export default function NotificationsScreen() {
 
       <PageHeader
         title="Notifications"
-        subtitle="Quiet, local alerts from this device’s active identity."
+        subtitle="Quiet alerts from this device’s active identity, with best-effort remote delivery."
       />
 
       {!preferences ? (
@@ -182,6 +265,17 @@ export default function NotificationsScreen() {
                 />
               }
             />
+          ) : null}
+
+          {preferences.enabled && permission && pushState && !pushState.projectConfigured ? (
+            <InlineNotice
+              message="Remote push needs an EAS project ID and push credentials. Local background checks still work."
+              tone="warning"
+            />
+          ) : null}
+
+          {pushState?.lastError ? (
+            <InlineNotice message={`Remote push: ${pushState.lastError}`} tone="warning" />
           ) : null}
 
           {notice ? <InlineNotice message={notice.message} tone={notice.tone} /> : null}
@@ -235,11 +329,59 @@ export default function NotificationsScreen() {
                 </AppText>
               )}
               <AppText variant="caption" color="textSecondary">
+                Remote moments and replies can arrive through Expo push while Folio is closed. Invitations wait for the next background check.
+              </AppText>
+              <AppText variant="caption" color="textSecondary">
                 Delivery is not guaranteed. Force-stopping Folio stops checks, and iOS decides when checks run.
               </AppText>
               <Divider />
               <AppText variant="caption" color="textSecondary">
-                Circle and author names may appear on the lock screen and in notification history.
+                Remote push copy is generic. Local notifications may show circle and author names on the lock screen.
+              </AppText>
+            </View>
+          </Card>
+
+          <SectionHeader title="Test notifications" />
+          <Card>
+            <View style={{ gap: theme.spacing.md }}>
+              <AppText variant="caption" color="textSecondary">
+                Permission: {permission ? 'granted' : 'not granted'} · Background task:{' '}
+                {taskState.registered ? 'registered' : 'not registered'} · Remote push:{' '}
+                {pushState
+                  ? pushState.projectConfigured
+                    ? pushState.token
+                      ? 'token ready'
+                      : 'no token'
+                    : 'no EAS project'
+                  : 'checking'}
+              </AppText>
+              <Button
+                label="Send test notification"
+                variant="secondary"
+                fullWidth
+                loading={busy === 'test'}
+                disabled={Boolean(busy)}
+                onPress={() => void runNotificationTest()}
+              />
+              <Button
+                label="Run inbox check now"
+                variant="secondary"
+                fullWidth
+                loading={busy === 'check'}
+                disabled={Boolean(busy)}
+                onPress={() => void runInboxCheck()}
+              />
+              <Button
+                label="Send remote test push"
+                variant="secondary"
+                fullWidth
+                loading={busy === 'remote'}
+                disabled={Boolean(busy)}
+                onPress={() => void runRemoteTest()}
+              />
+              <AppText variant="caption" color="textTertiary">
+                The test notification is allowed in the foreground. The inbox check only notifies
+                if another identity produced a new event.
               </AppText>
             </View>
           </Card>

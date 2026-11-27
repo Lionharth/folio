@@ -209,13 +209,30 @@ export async function flushMembershipReceipts(
   });
 }
 
+const controlFlushes = new Map<string, Promise<number>>();
+
 /** Retries owner-to-member controls such as removal notices. */
-export async function flushControlOutbox(
+export function flushControlOutbox(
   secretKey: Uint8Array,
   pool?: Pool,
   timeBudgetMs = 8_000
 ): Promise<number> {
   const senderPubkey = getPublicKey(secretKey);
+  const existing = controlFlushes.get(senderPubkey);
+  if (existing) return existing;
+  const run = runControlFlush(secretKey, senderPubkey, pool, timeBudgetMs).finally(() => {
+    controlFlushes.delete(senderPubkey);
+  });
+  controlFlushes.set(senderPubkey, run);
+  return run;
+}
+
+async function runControlFlush(
+  secretKey: Uint8Array,
+  senderPubkey: string,
+  pool: Pool | undefined,
+  timeBudgetMs: number
+): Promise<number> {
   const pending = await listPendingControls(senderPubkey);
   if (pending.length === 0) return 0;
   return withOptionalPool(secretKey, pool, async (activePool) => {
@@ -234,6 +251,23 @@ export async function flushControlOutbox(
           if (control.recipientPubkey !== senderPubkey) {
             const member = await getCircleMember(control.payload.circleId, control.recipientPubkey);
             if (!isParticipatingStatus(member?.status)) {
+              await markControlSent(control.id);
+              sent += 1;
+              continue;
+            }
+          }
+        }
+        if (control.payload.type === 'push-token' || control.payload.type === 'push-token-request') {
+          // A removed or still-invited member must not receive a device token.
+          const senderMember = await getCircleMember(control.payload.circleId, senderPubkey);
+          if (senderMember?.status !== 'active') {
+            await markControlSent(control.id);
+            sent += 1;
+            continue;
+          }
+          if (control.recipientPubkey !== senderPubkey) {
+            const member = await getCircleMember(control.payload.circleId, control.recipientPubkey);
+            if (member?.status !== 'active') {
               await markControlSent(control.id);
               sent += 1;
               continue;

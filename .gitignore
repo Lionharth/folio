@@ -17,6 +17,9 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+google-services.json
+*firebase-adminsdk*.json
+*service-account*.json
 
 # Build artifacts
 *.apk

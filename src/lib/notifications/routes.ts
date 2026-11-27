@@ -5,10 +5,12 @@
 
 export type NotificationRoute =
   | { kind: 'vlog'; vlogId: string; comments: boolean }
+  | { kind: 'remote-vlog'; remoteId: string; comments: boolean }
   | { kind: 'updates'; circleId?: string }
   | { kind: 'circles' };
 
 export const VLOG_PATH = '/vlog/';
+export const OPEN_PATH = '/open';
 export const UPDATES_PATH = '/updates';
 export const CIRCLES_PATH = '/circles';
 
@@ -18,6 +20,11 @@ export function vlogNotificationUrl(vlogId: string): string {
 
 export function commentsNotificationUrl(vlogId: string): string {
   return `${VLOG_PATH}${vlogId}?comments=1`;
+}
+
+/** Remote pushes do not know the recipient's local vlog id, only the author's id. */
+export function remoteVlogNotificationUrl(remoteId: string, comments = false): string {
+  return `${OPEN_PATH}?remoteId=${encodeURIComponent(remoteId)}${comments ? '&comments=1' : ''}`;
 }
 
 export function updatesNotificationUrl(circleId: string): string {
@@ -37,13 +44,17 @@ function decode(value: string): string | null {
 }
 
 function updatesCircleId(query: string): string | undefined {
+  return queryValue(query, 'circleId');
+}
+
+function queryValue(query: string, key: string): string | undefined {
   if (!query) return undefined;
   for (const part of query.split('&')) {
     const separator = part.indexOf('=');
     if (separator < 0) continue;
     const rawKey = part.slice(0, separator);
     const rawValue = part.slice(separator + 1);
-    if (rawKey !== 'circleId' || !rawValue) continue;
+    if (rawKey !== key || !rawValue) continue;
     return decode(rawValue) ?? undefined;
   }
   return undefined;
@@ -76,6 +87,12 @@ export function resolveNotificationRoute(
     if (!vlogId || vlogId.includes('/')) return null;
     if (!vlogId.startsWith(`${viewerPubkey.slice(0, 10)}-`)) return null;
     return { kind: 'vlog', vlogId, comments: commentsRequested(query) };
+  }
+
+  if (normalizedPath === OPEN_PATH) {
+    const remoteId = queryValue(query, 'remoteId');
+    if (!remoteId || remoteId.length > 120 || /[\u0000-\u001f\u007f]/.test(remoteId)) return null;
+    return { kind: 'remote-vlog', remoteId, comments: commentsRequested(query) };
   }
 
   if (normalizedPath === UPDATES_PATH) {

@@ -51,6 +51,10 @@ import {
   suppressCircleFromReceipt,
 } from './membership';
 import { applySocialControl, createSocialValidationCache } from './social';
+import {
+  applyPushTokenControl,
+  respondWithPushTokenAsync,
+} from './push';
 
 const PAGE_SIZE = 500;
 const MAX_BACKFILL_PAGES = 20;
@@ -75,6 +79,7 @@ type InboxWindowSource = 'incremental' | 'backfill';
 
 interface CollectedInbox {
   files: Map<string, InboxMessage>;
+  fileSources: Map<string, InboxWindowSource>;
   controls: Map<string, ControlInboxMessage>;
   controlSources: Map<string, InboxWindowSource>;
 }
@@ -85,7 +90,12 @@ function collectPage(
   source: InboxWindowSource
 ): void {
   for (const file of page.files) {
-    if (!collected.files.has(file.rumorId)) collected.files.set(file.rumorId, file);
+    if (!collected.files.has(file.rumorId)) {
+      collected.files.set(file.rumorId, file);
+      collected.fileSources.set(file.rumorId, source);
+    } else if (source === 'incremental') {
+      collected.fileSources.set(file.rumorId, 'incremental');
+    }
   }
   for (const control of page.controls) {
     if (!collected.controls.has(control.rumorId)) {
@@ -113,13 +123,20 @@ async function fetchWindow(
   pool: Pool,
   relays: string[],
   secretKey: Uint8Array,
-  options: { since?: number; states: Map<string, RelayWindowCursor> },
+  options: {
+    since?: number;
+    states: Map<string, RelayWindowCursor>;
+    timeoutMs?: number;
+    budgetMs?: number;
+  },
   maxPages: number,
   source: InboxWindowSource,
   collected: CollectedInbox
 ): Promise<WindowResult> {
   const states = options.states;
   const uniqueRelays = [...new Set(relays)];
+  const timeoutMs = options.timeoutMs ?? 8_000;
+  const budgetMs = options.budgetMs ?? 15_000;
   let anyOk = false;
   const startedAt = Date.now();
 
@@ -137,7 +154,7 @@ async function fetchWindow(
       since: options.since,
       untilByRelay,
       limit: PAGE_SIZE,
-      timeoutMs: 8_000,
+      timeoutMs,
     });
     collectPage(collected, page, source);
 
@@ -165,7 +182,7 @@ async function fetchWindow(
     if (uniqueRelays.every((relay) => states.get(relay)?.complete || states.get(relay)?.failed)) {
       break;
     }
-    if (Date.now() - startedAt > 15_000) break;
+    if (Date.now() - startedAt > budgetMs) break;
   }
 
   return {
@@ -235,6 +252,7 @@ function toVlog(message: InboxMessage, viewerPubkey: string): { vlog: Vlog; clip
 interface EvidenceCandidate {
   payload: CircleMembershipPayload;
   source: 'self' | 'removed';
+  incremental: boolean;
 }
 
 function evidenceOrder(payload: CircleMembershipPayload) {
@@ -303,8 +321,10 @@ async function learnNamesInOrder(
       ) {
         recordSnapshotNames(names, payload.circle, at);
       }
-    } else if (payload.authorName) {
-      recordName(names, control.senderPubkey, payload.authorName, at);
+    } else if (payload.type === 'circle-comment' || payload.type === 'circle-reaction') {
+      if (payload.authorName) {
+        recordName(names, control.senderPubkey, payload.authorName, at);
+      }
     }
   }
   for (const message of files.values()) {
@@ -336,20 +356,23 @@ async function applyCircleSnapshot(snapshot: CircleInvitePayload['circle'], self
 export async function refreshInbox(
   secretKey: Uint8Array,
   relays: string[] = DEFAULT_DM_RELAYS,
-  options: { collectEvents?: boolean } = {}
+  options: { collectEvents?: boolean; fast?: boolean; live?: boolean } = {}
 ): Promise<InboxRefreshResult> {
   const pubkey = getPublicKey(secretKey);
   const collectEvents = options.collectEvents === true;
+  const fast = options.fast === true;
+  const live = options.live === true;
   const syncStartedAt = Math.floor(Date.now() / 1000);
   const pool = createPool({ secretKey });
   try {
     const state = await getInboxState(pubkey);
     // Social activity is new-only: only controls from the incremental window
     // may create Inbox rows, never controls paged in by a backfill window.
-    const recordSocialActivity = Boolean(state?.lastSyncAt);
+    const recordSocialActivity = Boolean(state?.lastSyncAt) || live;
     const relayStates = await listRelayStates(pubkey, relays);
     const collected: CollectedInbox = {
       files: new Map(),
+      fileSources: new Map(),
       controls: new Map(),
       controlSources: new Map(),
     };
@@ -380,27 +403,36 @@ export async function refreshInbox(
         failed: false,
       });
       incrementalStates.set(relay, {
-        until: relayState.incrementalUntil,
-        complete: relayState.incrementalComplete,
+        until: live ? null : relayState.incrementalUntil,
+        complete: live ? false : relayState.incrementalComplete,
         failed: false,
       });
     }
 
     let incrementalResult: WindowResult | null = null;
     let backfillResult: WindowResult | null = null;
-    if (state?.lastSyncAt) {
-      const since = Math.max(0, state.lastSyncAt - INBOX_OVERLAP_SECONDS);
+    const hasCursor = Boolean(state?.lastSyncAt);
+    const fastIncremental = fast && hasCursor;
+    const fastWindow = live || fastIncremental;
+    if (live || state?.lastSyncAt) {
+      const since = live
+        ? Math.max(0, Math.floor(Date.now() / 1000) - 300)
+        : Math.max(0, state!.lastSyncAt! - INBOX_OVERLAP_SECONDS);
       incrementalResult = await fetchWindow(
         pool,
         relays,
         secretKey,
-        { since, states: incrementalStates },
-        MAX_INCREMENTAL_PAGES,
+        {
+          since,
+          states: incrementalStates,
+          ...(fastWindow ? { timeoutMs: 2_500, budgetMs: 4_000 } : {}),
+        },
+        fastWindow ? 1 : MAX_INCREMENTAL_PAGES,
         'incremental',
         collected
       );
     }
-    if ([...backfillStates.values()].some((relayState) => !relayState.complete)) {
+    if (!live && (!fast || !hasCursor) && [...backfillStates.values()].some((relayState) => !relayState.complete)) {
       backfillResult = await fetchWindow(
         pool,
         relays,
@@ -421,7 +453,11 @@ export async function refreshInbox(
       if (payload.memberPubkey !== pubkey) continue;
 
       if (control.senderPubkey === pubkey) {
-        considerCandidate(candidates, { payload, source: 'self' });
+        considerCandidate(candidates, {
+          payload,
+          source: 'self',
+          incremental: collected.controlSources.get(control.rumorId) === 'incremental',
+        });
         continue;
       }
 
@@ -430,7 +466,11 @@ export async function refreshInbox(
       // part of the evidence key, so a forged owner cannot suppress another
       // circle's invitation.
       if (payload.ownerPubkey !== control.senderPubkey) continue;
-      considerCandidate(candidates, { payload, source: 'removed' });
+      considerCandidate(candidates, {
+        payload,
+        source: 'removed',
+        incremental: collected.controlSources.get(control.rumorId) === 'incremental',
+      });
     }
 
     let restored = 0;
@@ -487,7 +527,7 @@ export async function refreshInbox(
         }
         await suppressCircleFromReceipt({ payload, selfPubkey: pubkey });
         suppressed += 1;
-        if (removedByOwner && collectEvents) {
+        if (removedByOwner && collectEvents && candidate.incremental) {
           events.membership.push({
             circleId: payload.circleId,
             circleName: name ?? '',
@@ -517,7 +557,10 @@ export async function refreshInbox(
             kind: 'member-joined',
             createdAt: toMillis(control.payload.at),
           });
-          if (collectEvents) {
+          if (
+            collectEvents &&
+            collected.controlSources.get(control.rumorId) === 'incremental'
+          ) {
             events.membership.push({
               circleId: circle.id,
               circleName: circle.name,
@@ -568,7 +611,10 @@ export async function refreshInbox(
             inviteId: stored.invite.id,
             createdAt: toMillis(control.payload.invitedAt),
           });
-          if (collectEvents) {
+          if (
+            collectEvents &&
+            collected.controlSources.get(control.rumorId) === 'incremental'
+          ) {
             circleNames.set(circle.id, circle.name);
             events.invites.push({
               inviteId: stored.invite.id,
@@ -633,6 +679,37 @@ export async function refreshInbox(
       });
     }
 
+    let answeredPushTokenRequest = false;
+    for (const control of controls) {
+      const payload = control.payload;
+      if (payload.type === 'push-token') {
+        if (control.senderPubkey === pubkey) continue;
+        if (collected.controlSources.get(control.rumorId) !== 'incremental') continue;
+        if (!(await isActiveMember(payload.circleId, control.senderPubkey))) continue;
+        if (!(await isActiveMember(payload.circleId, pubkey))) continue;
+        await applyPushTokenControl({
+          viewerPubkey: pubkey,
+          senderPubkey: control.senderPubkey,
+          payload,
+        });
+        continue;
+      }
+
+      if (payload.type !== 'push-token-request') continue;
+      if (control.senderPubkey === pubkey) continue;
+      // Backfilled requests are stale; only answer a request from this sync window.
+      if (collected.controlSources.get(control.rumorId) !== 'incremental') continue;
+      if (!(await isActiveMember(payload.circleId, control.senderPubkey))) continue;
+      if (!(await isActiveMember(payload.circleId, pubkey))) continue;
+      const responded = await respondWithPushTokenAsync(
+        secretKey,
+        control.senderPubkey,
+        payload.circleId,
+        control.rumorId
+      ).catch(() => false);
+      if (responded) answeredPushTokenRequest = true;
+    }
+
     const socialCache = createSocialValidationCache();
     for (const control of controls) {
       const payload = control.payload;
@@ -656,6 +733,7 @@ export async function refreshInbox(
       ) {
         events.social.push({
           vlogId: activity.localVlogId,
+          remoteId: activity.remoteVlogId ?? undefined,
           circleId: activity.circleId,
           circleName: await resolveCircleName(activity.circleId),
           actorPubkey: activity.actorPubkey,
@@ -676,13 +754,14 @@ export async function refreshInbox(
       }
       await upsertVlog(vlog, [clip]);
       added += 1;
-      if (collectEvents) {
+      if (collectEvents && collected.fileSources.get(message.rumorId) === 'incremental') {
         const circleId = message.payload.circleId;
         const senderActive = await isActiveMember(circleId, message.senderPubkey);
         const viewerActive = await isActiveMember(circleId, pubkey);
         if (senderActive && viewerActive) {
           events.moments.push({
             vlogId: vlog.id,
+            remoteId: vlog.remoteId,
             circleId,
             circleName: await resolveCircleName(circleId),
             authorPubkey: message.senderPubkey,
@@ -691,7 +770,9 @@ export async function refreshInbox(
       }
     }
 
-    await seedMembershipReceipts(secretKey, pool);
+    if (!fast) {
+      await seedMembershipReceipts(secretKey, pool);
+    }
 
     const backfillComplete = [...backfillStates.values()].every((relayState) => relayState.complete);
     const incrementalComplete = incrementalResult?.allComplete ?? true;
@@ -715,17 +796,23 @@ export async function refreshInbox(
         incrementalComplete: resetIncremental ? false : incremental.complete,
       };
     });
-    await saveRelayStates(pubkey, savedRelayStates);
-    await saveInboxState({
-      recipientPubkey: pubkey,
-      backfillComplete,
-      backfillUntil: null,
-      lastSyncAt: nextLastSync,
-    });
+    if (!live) {
+      await saveRelayStates(pubkey, savedRelayStates);
+      await saveInboxState({
+        recipientPubkey: pubkey,
+        backfillComplete,
+        backfillUntil: null,
+        lastSyncAt: nextLastSync,
+      });
+    }
     await pruneActivity(pubkey, 200);
 
-    await flushControlOutbox(secretKey, pool, 5_000);
-    await flushMembershipReceipts(secretKey, pool, 3_000);
+    if (!fast || answeredPushTokenRequest) {
+      await flushControlOutbox(secretKey, pool, answeredPushTokenRequest && fast ? 4_000 : 5_000);
+      if (!fast) {
+        await flushMembershipReceipts(secretKey, pool, 3_000);
+      }
+    }
 
     return {
       received: collected.files.size + controls.length,

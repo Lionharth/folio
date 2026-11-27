@@ -89,12 +89,33 @@ jobs:
           echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
           test "$VERSION" = "$APP_VERSION"
           echo "$VERSION_CODE" | grep -Eq '^[0-9]+$'
+          PROJECT_ID=$(node -p "require('./app.json').expo.extra.eas.projectId")
+          echo "$PROJECT_ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          echo "project_id=$PROJECT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Android push credentials
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GOOGLE_SERVICES_JSON:-}" ]; then
+            echo "::error::Missing GOOGLE_SERVICES_JSON repository secret. Add the Firebase google-services.json contents."
+            exit 1
+          fi
+          printf '%s' "$GOOGLE_SERVICES_JSON" > google-services.json
+          node -e "const fs=require('fs'); const c=JSON.parse(fs.readFileSync('google-services.json','utf8')); const pkg=require('./app.json').expo.android.package; const names=(c.client||[]).map(x=>x.client_info&&x.client_info.android_client_info&&x.client_info.android_client_info.package_name); if(!c.project_info||!c.project_info.project_id) throw new Error('google-services.json is missing project_info.project_id'); if(!names.includes(pkg)) throw new Error('google-services.json has no Android client for '+pkg); console.log('Firebase project:', c.project_info.project_id)"
 
       - name: Prebuild Android project
         run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Verify push configuration
+        run: |
+          set -euo pipefail
+          test -f android/app/google-services.json
+          grep -Rq "com.google.gms.google-services" android --include="*.gradle"
 
       - name: Build release APK
         working-directory: android

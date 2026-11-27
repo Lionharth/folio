@@ -1,7 +1,10 @@
 import { randomUUID } from 'expo-crypto';
 
+import { createSerialQueue } from '../async/serialQueue';
 import type { CircleControlPayload } from '../nostr/circleControl';
 import { getDatabase } from './db';
+
+const enqueueQueue = createSerialQueue();
 
 export interface PendingControl {
   id: string;
@@ -50,10 +53,10 @@ export async function enqueueControls(
   const db = await getDatabase();
   const ids = recipients.map(() => randomUUID());
   const now = Date.now();
-  const insert = async () => {
+  const insert = async (runAsync: (typeof db)['runAsync']) => {
     for (let index = 0; index < recipients.length; index += 1) {
       const recipient = recipients[index];
-      await db.runAsync(
+      await runAsync(
         'INSERT INTO control_outbox (id, sender_pubkey, recipient_pubkey, payload, created_at, sent_at) VALUES (?, ?, ?, ?, ?, NULL)',
         ids[index],
         senderPubkey,
@@ -64,9 +67,13 @@ export async function enqueueControls(
     }
   };
   if (options.transaction === false) {
-    await insert();
+    await insert(db.runAsync.bind(db));
   } else {
-    await db.withTransactionAsync(insert);
+    await enqueueQueue.run(() =>
+      db.withExclusiveTransactionAsync(async (transaction) => {
+        await insert(transaction.runAsync.bind(transaction));
+      })
+    );
   }
   return ids;
 }
@@ -77,6 +84,7 @@ export async function listPendingControls(senderPubkey: string, limit = 100): Pr
     `SELECT * FROM control_outbox
      WHERE sender_pubkey = ? AND sent_at IS NULL
      ORDER BY CASE
+       WHEN payload LIKE '%"type":"push-token"%' OR payload LIKE '%"type":"push-token-request"%' THEN 2
        WHEN payload LIKE '%"type":"circle-comment"%' OR payload LIKE '%"type":"circle-reaction"%' THEN 1
        ELSE 0
      END ASC, created_at ASC

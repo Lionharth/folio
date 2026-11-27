@@ -325,19 +325,50 @@ names, membership, invitation, roster, social and file processing.
 
 ## Notifications
 
-Notifications are entirely device-local. Folio does not publish a notification
-event, does not add a relay payload, and does not exchange push tokens. The same
-`kind: 1059` inbox sync that applies moments, invitations, membership transitions
-and social controls produces local notification copy after those transitions are
-durable. No new protocol message is introduced.
+The same `kind: 1059` inbox sync that applies moments, invitations, membership
+transitions and social controls produces local notification copy after those
+transitions are durable. Remote push adds two private control messages but no new
+relay event type:
+
+- `push-token` (`kind: 14`, `folio-control`, `v: 1`) carries
+  `{ circleId, token, platform, deviceId, enabled, preferences, muted, at }`.
+  The token is an Expo push token, scoped to one circle and delivered only to
+  that circle's active members through their `kind: 10050` relays.
+  `preferences` carries `{ posts, activity, invites }`; `muted` is that circle's
+  local mute state.
+- `push-token-request` carries `{ circleId, at }` and asks active members to send
+  their token back. Requests received during backfill are ignored.
+
+A receiver accepts a token only when the sender is an active member of the named
+circle. Tokens are stored per viewer, owner, circle and device in `push_tokens`
+(schema version 12); a newer `at` replaces a device's old token, including its
+preference and mute flags, and `enabled: false` removes it. Tokens are pruned
+after 90 days without an update. These controls never create Inbox activity and
+never teach display names.
+
+Remote notifications use the Expo Push Service payload, not a Nostr event. The
+payload contains generic copy and `{ url, remoteId?, circleId, category,
+viewerPubkey }`; the recipient syncs and resolves `remoteId` to its own local vlog
+id through `/open`, and ignores the notification when `viewerPubkey` is not the
+active identity. Invitation pushes use `category: "invite"`, no `remoteId`, and
+route to `/circles`. They are sent only when the inviter already knows the
+invitee's token from another shared circle; a cold invitation has no token and
+remains local until the next inbox sync.
+
+While the app is active, each identity may subscribe directly to `kind: 1059`
+gift wraps with its `p` tag on the configured inbox relays. A new wrap triggers a
+debounced incremental sync; this is a client behavior and adds no relay payload.
 
 Social activity is also materialized locally in the `activity` table for the
 in-app Inbox. Activity is new-only: it is recorded when a received comment or
 reaction newly applies after the initial backfill. Notification routing for a
 reply, comment or reaction uses `/vlog/<local-id>?comments=1` so the conversation
 opens expanded. Comment bodies are not copied into notification text. Per-circle
-mute suppresses every notification family for that circle and hides its Inbox
-activity while muted; the circle's moments remain visible in Updates.
+mute suppresses every local notification family for that circle and hides its
+Inbox activity while muted; the circle's moments remain visible in Updates.
+Remote pushes consult the announced `muted` and `preferences` flags, so a mute or
+preference change propagates on the next token announcement and may lag until
+then.
 
 ## FOLIO-FC1
 

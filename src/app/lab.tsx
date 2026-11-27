@@ -19,6 +19,8 @@ import {
   getNotificationPermissionAsync,
   sendTestNotificationAsync,
 } from '../services/notifications';
+import { getPushDebugStateAsync, sendRemoteTestPushAsync } from '../services/push';
+import { useSession } from '../stores/session';
 import { useTheme } from '../theme/ThemeProvider';
 import { formatBytes } from '../utils/time';
 
@@ -132,9 +134,13 @@ export default function LabScreen() {
     status: string;
     registered: boolean;
   } | null>(null);
+  const [pushInfo, setPushInfo] = useState<
+    Awaited<ReturnType<typeof getPushDebugStateAsync>> | null
+  >(null);
   const [notificationBusy, setNotificationBusy] = useState<string | null>(null);
   const [notificationNotice, setNotificationNotice] = useState<string | null>(null);
   const running = useRef(false);
+  const identity = useSession((state) => state.identity);
 
   const runAll = useCallback(async () => {
     if (running.current) return;
@@ -169,9 +175,10 @@ export default function LabScreen() {
   }, [runAll]);
 
   const refreshNotificationInfo = useCallback(async () => {
-    const [permission, background] = await Promise.all([
+    const [permission, background, push] = await Promise.all([
       getNotificationPermissionAsync(),
       getInboxBackgroundTaskStateAsync(),
+      getPushDebugStateAsync(identity),
     ]);
     const statusLabel =
       background.status === BackgroundTask.BackgroundTaskStatus.Restricted
@@ -180,7 +187,8 @@ export default function LabScreen() {
           ? 'Available'
           : 'Unknown';
     setNotificationInfo({ permission, status: statusLabel, registered: background.registered });
-  }, []);
+    setPushInfo(push);
+  }, [identity]);
 
   useEffect(() => {
     void refreshNotificationInfo();
@@ -237,6 +245,20 @@ export default function LabScreen() {
                 {' · '}Background: {notificationInfo?.status ?? 'checking'}
                 {' · '}Task: {notificationInfo ? (notificationInfo.registered ? 'registered' : 'not registered') : 'checking'}
               </AppText>
+              <AppText variant="caption" color="textSecondary">
+                Remote push: {pushInfo ? (pushInfo.projectConfigured ? 'EAS project configured' : 'no EAS project ID') : 'checking'}
+                {' · '}Announced: {pushInfo?.announcedAt ? new Date(pushInfo.announcedAt).toLocaleString() : 'never'}
+              </AppText>
+              {pushInfo?.token ? (
+                <AppText variant="caption" color="textTertiary" selectable>
+                  {pushInfo.token}
+                </AppText>
+              ) : null}
+              {pushInfo?.lastError ? (
+                <AppText variant="caption" color="danger" accessibilityLiveRegion="polite">
+                  {pushInfo.lastError}
+                </AppText>
+              ) : null}
               {notificationNotice ? (
                 <AppText variant="caption" color="textSecondary" accessibilityLiveRegion="polite">
                   {notificationNotice}
@@ -265,6 +287,18 @@ export default function LabScreen() {
                   void runNotificationAction('test', async () => {
                     const scheduled = await sendTestNotificationAsync();
                     return scheduled ? 'Test notification scheduled.' : 'Notification could not be scheduled.';
+                  })
+                }
+              />
+              <Button
+                label="Send remote test push"
+                variant="secondary"
+                fullWidth
+                loading={notificationBusy === 'remote'}
+                disabled={Boolean(notificationBusy)}
+                onPress={() =>
+                  void runNotificationAction('remote', async () => {
+                    return await sendRemoteTestPushAsync(identity);
                   })
                 }
               />

@@ -8,6 +8,7 @@ import { countUnreadActivity } from '../lib/database/activity';
 import { getContactNames } from '../lib/database/contacts';
 import { getSetting, setSetting } from '../lib/database/settings';
 import { countUnread, listCircles } from '../lib/database/vlogs';
+import { listRemoteNotifiedAsync } from '../lib/notifications/remoteNotified';
 import {
   buildInboxNotifications,
   type InboxNotificationEvents,
@@ -140,7 +141,10 @@ async function scheduleRequestAsync(request: NotificationRequest): Promise<void>
     content: {
       title: request.title,
       body: request.body,
-      data: { url: request.data.url },
+      data: {
+        url: request.data.url,
+        ...(request.data.test ? { test: true } : {}),
+      },
     },
     trigger,
   });
@@ -168,10 +172,14 @@ export async function emitInboxNotifications(
   for (const event of events.social) pubkeys.add(event.actorPubkey);
   const names = await getContactNames([...pubkeys]);
   const mutedCircleIds = circles.filter((circle) => circle.muted).map((circle) => circle.id);
+  const remoteNotified = await listRemoteNotifiedAsync();
   const requests = buildInboxNotifications({
     events,
     preferences,
     mutedCircleIds,
+    remoteNotifiedMomentIds: remoteNotified.moments,
+    remoteNotifiedSocialIds: remoteNotified.social,
+    remoteNotifiedInviteCircleIds: remoteNotified.invites,
     names,
     viewerPubkey: identity.pubkey,
   });
@@ -197,7 +205,7 @@ export async function sendTestNotificationAsync(): Promise<boolean> {
       channel: 'moments',
       title: 'Folio test notification',
       body: 'Background checks are ready.',
-      data: { url: '/updates' },
+      data: { url: '/updates', test: true },
     });
     return true;
   } catch {

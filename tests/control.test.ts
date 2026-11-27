@@ -13,6 +13,8 @@ import {
   type CircleInvitePayload,
   type CircleMembershipPayload,
   type CircleReactionPayload,
+  type PushTokenPayload,
+  type PushTokenRequestPayload,
 } from '../src/lib/nostr/circleControl';
 
 function inviteFor(ownerPubkey: string, members: string[]): CircleInvitePayload {
@@ -313,4 +315,87 @@ test('social reaction payloads validate targets and emoji', () => {
   assert.equal(parseControlPayload(wrapTag(reactionPayload({ emoji: '\u2764\ufe0f \u2764\ufe0f' }))), null);
   assert.equal(parseControlPayload(wrapTag(reactionPayload({ authorName: 'x'.repeat(41) }))), null);
   assert.equal(parseControlPayload(wrapTag(reactionPayload({ at: -1 }))), null);
+});
+
+function pushTokenPayload(overrides: Partial<PushTokenPayload> = {}): PushTokenPayload {
+  return {
+    v: 1,
+    type: 'push-token',
+    circleId: 'circle-1',
+    token: 'ExponentPushToken[xxxxxxxxxxxxxxxxxxxxxx]',
+    platform: 'android',
+    deviceId: 'device-12345678',
+    enabled: true,
+    preferences: { posts: true, activity: true, invites: true },
+    muted: false,
+    at: 1_700_000_400_000,
+    ...overrides,
+  };
+}
+
+test('push token controls round-trip and validate', () => {
+  const sender = generateSecretKey();
+  const recipient = generateSecretKey();
+  const senderPub = getPublicKey(sender);
+  const recipientPub = getPublicKey(recipient);
+  const payload = pushTokenPayload();
+  const request: PushTokenRequestPayload = {
+    v: 1,
+    type: 'push-token-request',
+    circleId: 'circle-1',
+    at: 1_700_000_400_001,
+  };
+
+  const tokenWrap = wrapControl(payload, sender, recipientPub).wrap;
+  const tokenRumor = unwrapEvent(tokenWrap, recipient);
+  assert.equal(tokenRumor.pubkey, senderPub);
+  assert.deepEqual(parseControlPayload(tokenRumor.tags), payload);
+
+  const requestWrap = wrapControl(request, sender, recipientPub).wrap;
+  assert.deepEqual(parseControlPayload(unwrapEvent(requestWrap, recipient).tags), request);
+});
+
+test('push token controls reject unsafe values', () => {
+  const wrapTag = (value: unknown) => [[FOLIO_CONTROL_TAG, JSON.stringify(value)]];
+  assert.ok(parseControlPayload(wrapTag(pushTokenPayload())));
+  assert.ok(parseControlPayload(wrapTag(pushTokenPayload({ enabled: false }))));
+  assert.deepEqual(
+    parseControlPayload(wrapTag({ ...pushTokenPayload(), preferences: undefined, muted: undefined })),
+    pushTokenPayload({ preferences: { posts: true, activity: true, invites: true }, muted: false })
+  );
+  assert.deepEqual(
+    parseControlPayload(
+      wrapTag(
+        pushTokenPayload({
+          preferences: { posts: false, activity: true, invites: false },
+          muted: true,
+        })
+      )
+    ),
+    pushTokenPayload({
+      preferences: { posts: false, activity: true, invites: false },
+      muted: true,
+    })
+  );
+  assert.equal(
+    parseControlPayload(wrapTag(pushTokenPayload({ preferences: 'none' as never }))),
+    null
+  );
+  assert.equal(
+    parseControlPayload(
+      wrapTag(pushTokenPayload({ preferences: { posts: true, activity: true, invites: 'yes' as never } }))
+    ),
+    null
+  );
+  assert.equal(parseControlPayload(wrapTag(pushTokenPayload({ muted: 'yes' as never }))), null);
+  assert.equal(parseControlPayload(wrapTag(pushTokenPayload({ token: 'not-a-token' }))), null);
+  assert.equal(parseControlPayload(wrapTag(pushTokenPayload({ platform: 'web' as never }))), null);
+  assert.equal(parseControlPayload(wrapTag(pushTokenPayload({ deviceId: 'short' }))), null);
+  assert.equal(parseControlPayload(wrapTag(pushTokenPayload({ circleId: '' }))), null);
+  assert.equal(parseControlPayload(wrapTag(pushTokenPayload({ at: 0 }))), null);
+  assert.equal(parseControlPayload(wrapTag({ ...pushTokenPayload(), enabled: undefined })), null);
+  assert.equal(
+    parseControlPayload(wrapTag({ v: 1, type: 'push-token-request', circleId: '', at: 1 })),
+    null
+  );
 });

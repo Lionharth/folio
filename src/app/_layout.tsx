@@ -13,6 +13,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import * as ImagePicker from 'expo-image-picker';
+import * as Notifications from 'expo-notifications';
 import { router, Stack } from 'expo-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
@@ -30,10 +31,14 @@ import {
 } from '@expo-google-fonts/instrument-sans';
 import { useFonts } from 'expo-font';
 
+import { useInboxLiveSubscription } from '../hooks/useInboxLiveSubscription';
 import { useNotificationRouting } from '../hooks/useNotificationRouting';
+import { usePushRegistration } from '../hooks/usePushRegistration';
 import { setPendingCapture } from '../lib/media/pendingCapture';
+import { markRemoteNotifiedAsync } from '../lib/notifications/remoteNotified';
 import { clearIconBadgeAsync, reconcileNotificationRuntimeAsync } from '../services/notifications';
 import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
+import { useInboxSync } from '../stores/inboxSync';
 import { useSession } from '../stores/session';
 
 SplashScreen.preventAutoHideAsync().catch(() => undefined);
@@ -70,6 +75,7 @@ function RootStack() {
         <Stack.Screen name="inbox" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="notifications" options={{ animation: 'slide_from_right' }} />
         <Stack.Screen name="lab" options={{ animation: 'slide_from_bottom' }} />
+        <Stack.Screen name="open" options={{ animation: 'fade' }} />
       </Stack>
     </>
   );
@@ -98,6 +104,33 @@ export default function RootLayout() {
   const ready = fontsLoaded || fontError;
 
   useNotificationRouting(Boolean(ready));
+  usePushRegistration(Boolean(ready));
+  useInboxLiveSubscription(Boolean(ready), queryClient);
+
+  useEffect(() => {
+    if (!identity) return;
+    const subscription = Notifications.addNotificationReceivedListener((notification) => {
+      const data = notification.request.content.data;
+      const viewerPubkeys = data?.viewerPubkeys;
+      if (Array.isArray(viewerPubkeys)) {
+        if (!viewerPubkeys.includes(identity.pubkey)) return;
+      } else if (typeof data?.viewerPubkey === 'string' && data.viewerPubkey !== identity.pubkey) {
+        return;
+      }
+      if (data?.category === 'invite') {
+        if (typeof data.circleId === 'string') {
+          void markRemoteNotifiedAsync(data.circleId, 'invite').catch(() => undefined);
+        }
+        useInboxSync.getState().requestFastSync(identity, queryClient);
+        return;
+      }
+      if (typeof data?.remoteId !== 'string') return;
+      const category = data.category === 'moment' ? 'moment' : 'social';
+      void markRemoteNotifiedAsync(data.remoteId, category).catch(() => undefined);
+      useInboxSync.getState().requestFastSync(identity, queryClient);
+    });
+    return () => subscription.remove();
+  }, [identity]);
 
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => undefined);
@@ -132,9 +165,18 @@ export default function RootLayout() {
       void queryClient.invalidateQueries({ queryKey: ['unread'] });
       void queryClient.invalidateQueries({ queryKey: ['activity-unread'] });
       void queryClient.invalidateQueries({ queryKey: ['vlogs'] });
+      if (identity) {
+        const last = useInboxSync.getState().lastResult;
+        if (!last || Date.now() - last.completedAt > 30_000) {
+          void useInboxSync
+            .getState()
+            .sync(identity, queryClient, { fast: true })
+            .catch(() => undefined);
+        }
+      }
     });
     return () => subscription.remove();
-  }, []);
+  }, [identity]);
 
   if (!ready) {
     return (

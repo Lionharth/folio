@@ -23,6 +23,7 @@ import {
   publishMembershipControl,
   recordMembershipReceipt,
 } from './membership';
+import { announcePushTokenToCircleAsync, notifyInviteAsync } from './push';
 
 export class InviteDeliveryError extends Error {
   constructor(message: string) {
@@ -111,6 +112,11 @@ export async function inviteMember(input: {
     deliverControl(pool, input.secretKey, input.memberPubkey, payload)
   );
   await addCircleMember(circle.id, input.memberPubkey, 'invited');
+  void notifyInviteAsync({
+    viewerPubkey: senderPubkey,
+    inviteePubkey: input.memberPubkey,
+    circleId: circle.id,
+  }).catch(() => undefined);
   return delivered;
 }
 
@@ -123,7 +129,8 @@ export async function resendInvite(input: {
 }): Promise<{ rumorId: string; relays: string[] }> {
   const circle = await getCircle(input.circleId);
   if (!circle) throw new InviteDeliveryError('This circle no longer exists');
-  if (circle.ownerPubkey !== getPublicKey(input.secretKey)) {
+  const senderPubkey = getPublicKey(input.secretKey);
+  if (circle.ownerPubkey !== senderPubkey) {
     throw new InviteDeliveryError('Only the circle owner can invite people');
   }
   const members = await listCircleMembers(circle.id);
@@ -155,9 +162,15 @@ export async function resendInvite(input: {
     },
     invitedAt: Math.floor(Date.now() / 1000),
   };
-  return withPool(input.secretKey, (pool) =>
+  const delivered = await withPool(input.secretKey, (pool) =>
     deliverControl(pool, input.secretKey, input.memberPubkey, payload)
   );
+  void notifyInviteAsync({
+    viewerPubkey: senderPubkey,
+    inviteePubkey: input.memberPubkey,
+    circleId: circle.id,
+  }).catch(() => undefined);
+  return delivered;
 }
 
 export interface AcceptInviteResult {
@@ -235,6 +248,8 @@ export async function acceptInvite(input: {
   } catch {
     ownerNotified = false;
   }
+
+  void announcePushTokenToCircleAsync(input.secretKey, invite.circleId).catch(() => undefined);
 
   return { circleName: invite.name, ownerNotified };
 }

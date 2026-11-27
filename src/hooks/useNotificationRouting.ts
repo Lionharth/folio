@@ -32,8 +32,20 @@ export function useNotificationRouting(ready: boolean): void {
     const response = pending.current;
     pending.current = null;
 
-    const url = response.notification.request.content.data?.url;
+    const data = response.notification.request.content.data;
+    const url = data?.url;
+    const viewerPubkey = data?.viewerPubkey;
+    const viewerPubkeys = data?.viewerPubkeys;
     const active = identityRef.current;
+    const viewerMatches = Array.isArray(viewerPubkeys)
+      ? Boolean(active && viewerPubkeys.includes(active.pubkey))
+      : typeof viewerPubkey === 'string'
+        ? Boolean(active && viewerPubkey === active.pubkey)
+        : true;
+    if (!viewerMatches) {
+      await Notifications.clearLastNotificationResponseAsync().catch(() => undefined);
+      return;
+    }
     if (typeof url === 'string' && active) {
       const route = resolveNotificationRoute(url, active.pubkey);
       if (route) {
@@ -42,6 +54,14 @@ export function useNotificationRouting(ready: boolean): void {
             pathname: '/vlog/[id]',
             params: {
               id: route.vlogId,
+              ...(route.comments ? { comments: '1' } : {}),
+            },
+          });
+        } else if (route.kind === 'remote-vlog') {
+          router.push({
+            pathname: '/open',
+            params: {
+              remoteId: route.remoteId,
               ...(route.comments ? { comments: '1' } : {}),
             },
           });

@@ -341,3 +341,71 @@ test('missing names and circle names fall back honestly', () => {
   assert.equal(moment.title, 'New moment in a circle');
   assert.equal(moment.body, 'Someone shared a moment.');
 });
+
+test('remote-notified moments and threads skip the later local banner', () => {
+  const input = {
+    events: events({
+      moments: [
+        { vlogId: 'm1', remoteId: 'r1', circleId: 'c1', circleName: 'Studio', authorPubkey: 'alice' },
+        { vlogId: 'm2', remoteId: 'r2', circleId: 'c1', circleName: 'Studio', authorPubkey: 'bob' },
+      ],
+      social: [
+        {
+          vlogId: 'm2',
+          remoteId: 'r2',
+          circleId: 'c1',
+          circleName: 'Studio',
+          actorPubkey: 'alice',
+          kind: 'comment',
+        },
+      ],
+    }),
+    preferences,
+    mutedCircleIds: [],
+    names,
+    viewerPubkey: 'viewer',
+  };
+
+  const all = buildInboxNotifications({
+    ...input,
+    remoteNotifiedMomentIds: ['r2'],
+    remoteNotifiedSocialIds: ['r2'],
+  });
+  assert.equal(all.length, 1);
+  assert.equal(all[0].title, 'New moment in Studio');
+  assert.equal(all[0].data.url, '/vlog/m1');
+
+  const momentOnly = buildInboxNotifications({
+    ...input,
+    remoteNotifiedMomentIds: ['r2'],
+  });
+  assert.equal(momentOnly.length, 2);
+  assert.ok(momentOnly.some((request) => request.channel === 'social'));
+
+  const none = buildInboxNotifications({
+    ...input,
+    remoteNotifiedMomentIds: ['r1', 'r2'],
+    remoteNotifiedSocialIds: ['r2'],
+  });
+  assert.deepEqual(none, []);
+});
+
+test('remote-notified invites skip the later local banner', () => {
+  const input = {
+    events: events({
+      invites: [
+        { inviteId: 'i1', circleId: 'c1', circleName: 'Studio', ownerPubkey: 'bob', ownerName: 'Bob' },
+      ],
+    }),
+    preferences,
+    mutedCircleIds: [],
+    names,
+    viewerPubkey: 'viewer',
+  };
+
+  assert.equal(buildInboxNotifications(input).length, 1);
+  assert.deepEqual(
+    buildInboxNotifications({ ...input, remoteNotifiedInviteCircleIds: ['c1'] }),
+    []
+  );
+});

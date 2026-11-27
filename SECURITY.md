@@ -205,13 +205,30 @@ relay cannot forge a key message from another member.
 - Media keys are device-bound; identity recovery alone cannot restore old media.
 - No signed membership events shared across devices.
 - No background upload after the app is killed.
-- No remote push notifications and no push tokens. Notifications are local,
-  generated on this device after an inbox sync; delivery is best-effort and
-  depends on the OS running the background worker.
+- Remote push exists as peer-to-peer delivery through Expo Push Service and
+  FCM/APNs. An Expo push token is a bearer capability: any circle member who
+  received it can send notifications to that device, and a removed member keeps
+  tokens they already received. Tokens travel only inside NIP-17 wraps, but Expo,
+  Google and Apple see the token and the generic notification payload.
+- Remote push respects the recipient's announced mute and post/activity/invite
+  preferences, but those flags are shared with active circle members as part of
+  the token control, and a change can lag until the next announcement.
+- An invitation for a new circle may reuse a token learned from another shared
+  circle. The inviter already holds that capability, but the recipient should
+  understand that a known contact can send a generic invitation notification
+  without a new token exchange.
+- One Expo token belongs to the app install, not to an identity. A device with
+  multiple identities can receive a generic remote banner announced by an
+  inactive identity; the app ignores that notification's route when
+  `viewerPubkey` is not the active identity.
+- Foreground live subscriptions reveal the active pubkey and inbox relay choices
+  to those relays as ordinary `kind: 1059` filters. They run only while the app is
+  active; no new metadata is published.
 - Local notifications can expose circle names, author names, member names and
-  reaction emoji on a locked screen and in notification history. Comment bodies
-  are not included in notification copy. Notification payloads contain only a
-  routing URL, never keys, media keys or plaintext content.
+  reaction emoji on a locked screen and in notification history. Remote push copy
+  is generic and carries only a remote moment id, circle id, category and the
+  recipient identity. Comment bodies are not included in either. Notification
+  payloads contain no keys, media keys or plaintext content.
 - No certificate pinning.
 - No biometric lock.
 - No fuzzing; unit tests cover framing/tamper cases but not the native AES
