@@ -56,6 +56,9 @@ Blossom servers store opaque ciphertext.
   lists replies, comments, reactions, invitations and membership changes. Tapping
   a social row opens `/vlog/[id]?comments=1` with the conversation expanded;
   circle rows open Circles.
+- Tapping a circle opens `/circle/[id]` as a moments-only feed. Circle details,
+  the People list and owner invitations live at `/circle/[id]/settings`, opened
+  from the feed header, so the feed stays focused on moments.
 - `src/lib/queryKeys.ts` owns identity-aware keys and invalidation. Updates,
   Archive, circle feeds and vlog detail share one vlog root. Publish, sync,
   read and favourite writes therefore cannot leave independent stale lists.

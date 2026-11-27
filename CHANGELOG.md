@@ -43,6 +43,8 @@
 
 ### Changed
 
+- Tapping a circle now opens a moments-only feed. Circle details, the People
+  list and invitations moved to a separate page opened from the feed header.
 - Create → Advanced "Backup copy" is now "Mirror to all servers" and covers
   every other provider instead of a single backup.
 - Circles is a compact chat-style list: each circle is a row with its picture on
