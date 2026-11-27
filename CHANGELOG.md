@@ -34,6 +34,11 @@
 - Publishing keeps the screen awake while a moment uploads, so a long encrypted
   upload is not interrupted by the display sleeping.
 
+### Changed
+
+- Circles is a compact chat-style list: each circle is a row with its picture on
+  the left and name on the right, so more circles fit on screen.
+
 ### Removed
 
 - The in-app `expo-camera` recorder, its `/capture` route and the capture

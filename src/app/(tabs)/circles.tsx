@@ -7,7 +7,7 @@ import Feather from '@expo/vector-icons/Feather';
 
 import { AppText } from '../../components/ui/AppText';
 import { Button } from '../../components/ui/Button';
-import { Card } from '../../components/ui/Card';
+import { Card, Divider } from '../../components/ui/Card';
 import { IconButton } from '../../components/ui/IconButton';
 import { PageHeader, SectionHeader } from '../../components/ui/Layout';
 import { InlineNotice } from '../../components/ui/Notice';
@@ -237,49 +237,58 @@ export default function CirclesScreen() {
 function CircleCard({ circle, onPress }: { circle: CircleWithDetails; onPress: () => void }) {
   const theme = useTheme();
   const artwork = circle.coverUri ?? circle.recent?.coverUri ?? null;
+  const avatarSize = 52;
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={`${circle.name}. ${circle.members.length} ${circle.members.length === 1 ? 'member' : 'members'}${circle.muted ? '. Notification preference muted' : ''}`}
       style={({ pressed }) => ({
-        marginBottom: theme.spacing.xxl,
-        opacity: pressed ? 0.86 : 1,
-        transform: [{ scale: pressed ? 0.992 : 1 }],
+        backgroundColor: pressed ? theme.colors.surfaceSubtle : 'transparent',
       })}
     >
       <View
         style={{
-          height: 180,
-          borderRadius: theme.radius.xl,
-          overflow: 'hidden',
-          backgroundColor: theme.colors.surfaceSubtle,
+          flexDirection: 'row',
           alignItems: 'center',
-          justifyContent: 'center',
-          borderWidth: 1,
-          borderColor: theme.colors.border,
+          gap: theme.spacing.md,
+          paddingVertical: theme.spacing.sm,
+          minHeight: theme.layout.minTouchTarget + theme.spacing.md,
         }}
       >
-        {artwork ? (
-          <Image source={{ uri: artwork }} contentFit="cover" transition={180} style={{ width: '100%', height: '100%' }} />
-        ) : (
-          <AppText style={{ fontFamily: theme.font.serifLight, fontSize: 88, lineHeight: 96, color: theme.colors.textSecondary }}>
-            {circle.name.trim().charAt(0).toLowerCase() || 'f'}
+        <View
+          style={{
+            width: avatarSize,
+            height: avatarSize,
+            borderRadius: avatarSize / 2,
+            overflow: 'hidden',
+            backgroundColor: theme.colors.surfaceSubtle,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderWidth: 1,
+            borderColor: theme.colors.border,
+          }}
+        >
+          {artwork ? (
+            <Image source={{ uri: artwork }} contentFit="cover" transition={180} style={{ width: '100%', height: '100%' }} />
+          ) : (
+            <AppText style={{ fontFamily: theme.font.serifLight, fontSize: 24, lineHeight: 28, color: theme.colors.textSecondary }}>
+              {circle.name.trim().charAt(0).toLowerCase() || 'f'}
+            </AppText>
+          )}
+        </View>
+        <View style={{ flex: 1, gap: 2 }}>
+          <AppText variant="bodyStrong" numberOfLines={1}>
+            {circle.name}
           </AppText>
-        )}
-        <View style={{ position: 'absolute', right: theme.spacing.md, bottom: theme.spacing.md, backgroundColor: 'rgba(0,0,0,0.68)', borderRadius: theme.radius.pill, padding: theme.spacing.sm }}>
-          <Feather name="arrow-up-right" size={18} color="#FFFFFF" />
+          <AppText variant="caption" color="textSecondary" numberOfLines={1}>
+            {circle.members.length} {circle.members.length === 1 ? 'member' : 'members'}
+          </AppText>
         </View>
+        {circle.muted ? <Feather name="bell-off" size={16} color={theme.colors.textTertiary} /> : null}
+        <Feather name="chevron-right" size={18} color={theme.colors.textTertiary} />
       </View>
-      <View style={{ paddingTop: theme.spacing.md, gap: theme.spacing.xs }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm }}>
-          <AppText variant="vlogTitle" style={{ flex: 1 }}>{circle.name}</AppText>
-          {circle.muted ? <Feather name="bell-off" size={16} color={theme.colors.textTertiary} /> : null}
-        </View>
-        <AppText variant="caption" color="textSecondary">
-          {circle.members.length} {circle.members.length === 1 ? 'member' : 'members'}
-        </AppText>
-      </View>
+      <Divider inset={avatarSize + theme.spacing.md} />
     </Pressable>
   );
 }
