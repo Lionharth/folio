@@ -1,6 +1,12 @@
 /** Hard ceiling for an uploaded clip's plaintext payload. */
 export const MAX_VIDEO_BYTES = 25 * 1024 * 1024;
 
+/**
+ * Hint passed to the OS capture screen. Android camera apps receive it as an
+ * intent extra and may ignore it, so publishing still enforces the size budget.
+ */
+export const MAX_VIDEO_DURATION_SECONDS = 600;
+
 /** Leave room for the FC1 container so the encrypted upload stays under the cap. */
 export const VIDEO_TARGET_BYTES = MAX_VIDEO_BYTES - 128 * 1024;
 

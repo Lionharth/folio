@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Pressable, View } from 'react-native';
 import { Redirect, router, useFocusEffect, useLocalSearchParams, usePreventRemove } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -19,13 +19,14 @@ import { ScreenScroll } from '../components/ui/Screen';
 import { EmptyState, ErrorState, LoadingState } from '../components/ui/States';
 import { TextField } from '../components/ui/TextField';
 import { DEFAULT_PROVIDER_URL, PROVIDER_PRESETS } from '../constants/providers';
+import { MAX_VIDEO_DURATION_SECONDS } from '../constants/media';
 import { getSetting, setSetting } from '../lib/database/settings';
 import { listCirclesForViewer } from '../lib/database/vlogs';
+import { takePendingCapture } from '../lib/media/pendingCapture';
 import { readSecretKey } from '../lib/nostr/identity';
 import { invalidateVlogs, queryKeys } from '../lib/queryKeys';
 import { generateVideoThumbnail } from '../services/media';
 import { publishVlog, type PublishProgress } from '../services/publish';
-import { useCaptureStore } from '../stores/capture';
 import { useSession } from '../stores/session';
 import { useTheme } from '../theme/ThemeProvider';
 import { formatBytes, formatDuration } from '../utils/time';
@@ -59,8 +60,6 @@ export default function CreateScreen() {
   const identity = useSession((state) => state.identity);
   const sessionLoading = useSession((state) => state.loading);
   const params = useLocalSearchParams<{ circleId?: string }>();
-  const captured = useCaptureStore((state) => state.captured);
-  const setCaptured = useCaptureStore((state) => state.setCaptured);
 
   const [video, setVideo] = useState<SelectedVideo | null>(null);
   const [title, setTitle] = useState('');
@@ -69,11 +68,13 @@ export default function CreateScreen() {
   const [providerUrl, setProviderUrl] = useState(DEFAULT_PROVIDER_URL);
   const [mirrorCopies, setMirrorCopies] = useState(true);
   const [publishing, setPublishing] = useState(false);
+  const [openingCamera, setOpeningCamera] = useState(false);
   const [progress, setProgress] = useState<PublishProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [permissionBlocked, setPermissionBlocked] = useState(false);
   const [showDelivery, setShowDelivery] = useState(false);
   const [allowLeave, setAllowLeave] = useState(false);
+  const recoveredApplied = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,22 +133,60 @@ export default function CreateScreen() {
       .catch(() => undefined);
   }, []);
 
+  const applyAsset = useCallback((asset: ImagePicker.ImagePickerAsset) => {
+    const selected: SelectedVideo = {
+      uri: asset.uri,
+      durationMs: asset.duration ?? 0,
+      width: asset.width || undefined,
+      height: asset.height || undefined,
+      mimeType: asset.mimeType ?? 'video/mp4',
+      sizeBytes: asset.fileSize ?? undefined,
+    };
+    setVideo(selected);
+    setError(null);
+    setPermissionBlocked(false);
+    attachThumbnail(selected);
+  }, [attachThumbnail]);
+
   useFocusEffect(
     useCallback(() => {
-      if (!captured) return;
-      const selected: SelectedVideo = {
-        uri: captured.uri,
-        durationMs: captured.durationMs,
-        width: captured.width,
-        height: captured.height,
-        mimeType: captured.mimeType,
-      };
-      setVideo(selected);
-      setError(null);
-      attachThumbnail(selected);
-      setCaptured(null);
-    }, [attachThumbnail, captured, setCaptured])
+      // Android recovery hands a clip back through the layout after the activity
+      // was destroyed while the OS camera was open.
+      if (recoveredApplied.current) return;
+      recoveredApplied.current = true;
+      const recovered = takePendingCapture();
+      if (recovered) applyAsset(recovered);
+    }, [applyAsset])
   );
+
+  const recordVideo = async () => {
+    if (publishing || openingCamera) return;
+    setError(null);
+    setPermissionBlocked(false);
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        setPermissionBlocked(!permission.canAskAgain);
+        setError(
+          permission.canAskAgain
+            ? 'Allow camera access to record a moment.'
+            : 'Camera access is disabled. Allow it in system Settings.'
+        );
+        return;
+      }
+      setOpeningCamera(true);
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['videos'],
+        videoMaxDuration: MAX_VIDEO_DURATION_SECONDS,
+      });
+      if (result.canceled || result.assets.length === 0) return;
+      applyAsset(result.assets[0]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The camera could not be opened. Try again.');
+    } finally {
+      setOpeningCamera(false);
+    }
+  };
 
   const pickVideo = async () => {
     if (publishing) return;
@@ -171,17 +210,7 @@ export default function CreateScreen() {
         videoQuality: 1,
       });
       if (result.canceled || result.assets.length === 0) return;
-      const asset = result.assets[0];
-      const selected: SelectedVideo = {
-        uri: asset.uri,
-        durationMs: asset.duration ?? 0,
-        width: asset.width ?? undefined,
-        height: asset.height ?? undefined,
-        mimeType: asset.mimeType ?? 'video/mp4',
-        sizeBytes: asset.fileSize ?? undefined,
-      };
-      setVideo(selected);
-      attachThumbnail(selected);
+      applyAsset(result.assets[0]);
     } catch (pickerError) {
       setError(pickerError instanceof Error ? pickerError.message : 'The video picker could not be opened. Try again.');
     }
@@ -312,8 +341,9 @@ export default function CreateScreen() {
                 </View>
               </View>
               <View style={{ padding: theme.spacing.lg, flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm }}>
-                <Button label="Replace clip" variant="secondary" disabled={publishing} onPress={() => void pickVideo()} />
-                <Button label="Remove" variant="ghost" disabled={publishing} onPress={() => setVideo(null)} />
+                <Button label="Record again" variant="secondary" disabled={publishing || openingCamera} loading={openingCamera} onPress={() => void recordVideo()} />
+                <Button label="Import clip" variant="secondary" disabled={publishing || openingCamera} onPress={() => void pickVideo()} />
+                <Button label="Remove" variant="ghost" disabled={publishing || openingCamera} onPress={() => setVideo(null)} />
               </View>
             </View>
           ) : (
@@ -324,12 +354,13 @@ export default function CreateScreen() {
                   size="lg"
                   fullWidth
                   icon={<Feather name="video" size={18} color={theme.colors.onInk} />}
-                  disabled={publishing}
-                  onPress={() => router.push('/capture')}
+                  disabled={publishing || openingCamera}
+                  loading={openingCamera}
+                  onPress={() => void recordVideo()}
                 />
-                <Button label="Import clip" size="lg" variant="secondary" fullWidth disabled={publishing} onPress={() => void pickVideo()} />
+                <Button label="Import clip" size="lg" variant="secondary" fullWidth disabled={publishing || openingCamera} onPress={() => void pickVideo()} />
               </View>
-              <AppText variant="caption" color="textTertiary" align="center">Up to 10:00 · 1080p · 25 MB</AppText>
+              <AppText variant="caption" color="textTertiary" align="center">Up to 10:00 · compressed under 25 MB before sharing</AppText>
             </View>
           )}
         </Card>

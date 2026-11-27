@@ -22,6 +22,21 @@
 
 ## Unreleased
 
+### Added
+
+- Create → Record now opens the OS video-capture screen: a modal camera sheet on
+  iOS and the installed camera app's capture screen on Android. Recording no
+  longer stops at 25 MB; the 1080p/25 MB budget is enforced when publishing.
+- Non-MP4 captures (iOS `.mov`/HEVC) are re-encoded to H.264 MP4 before
+  encryption so Android recipients can play them.
+- Android captures lost when the system destroys the activity during recording
+  are recovered at startup and returned to Create with the clip attached.
+
+### Removed
+
+- The in-app `expo-camera` recorder, its `/capture` route and the capture
+  Zustand store. `expo-camera` remains for QR scanning.
+
 ## 0.1.2
 
 ### Added

@@ -9,7 +9,7 @@ import {
   THUMBNAIL_MAX_DIMENSION,
   VIDEO_TARGET_BYTES,
 } from '../constants/media';
-import { planVideoCompression, type VideoCompressionPlan } from '../lib/media/videoBudget';
+import { planVideoCompression, needsMp4Normalization, type VideoCompressionPlan } from '../lib/media/videoBudget';
 import { thumbnailDirectory } from '../lib/media/paths';
 
 const COMPRESSION_ATTEMPTS = 3;
@@ -257,12 +257,16 @@ export async function prepareVideoForPublish(
   }
 
   const plan = planVideoCompression({ width, height, durationMs, sizeBytes });
+  // A small `.mov` still has to be re-encoded so Android recipients can play it.
+  const forceMp4 = needsMp4Normalization(input.mimeType);
   let finalUri = input.uri;
   let finalSize = sizeBytes;
   let finalMimeType = input.mimeType ?? 'video/mp4';
 
-  if (plan.needsCompression) {
-    if (!plan.feasible) {
+  if (plan.needsCompression || forceMp4) {
+    // Feasibility is a size-budget answer: a clip forced only for MP4
+    // normalization may already fit and should still be published.
+    if (plan.needsCompression && !plan.feasible) {
       throw new VideoTooLargeError(
         'This clip is too long to fit in 25 MB. Try a shorter clip or trim it first.'
       );

@@ -94,3 +94,11 @@ export function planVideoCompression(input: VideoBudgetInput): VideoCompressionP
 export function exceedsVideoCap(sizeBytes: number): boolean {
   return sizeBytes > MAX_VIDEO_BYTES;
 }
+
+/**
+ * iOS records `.mov` (often HEVC), and Android recipients cannot play it via
+ * the `.mp4` plaintext path. Non-MP4 sources are re-encoded to H.264 MP4.
+ */
+export function needsMp4Normalization(mimeType?: string | null): boolean {
+  return Boolean(mimeType && !/^video\/mp4\b/i.test(mimeType));
+}

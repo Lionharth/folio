@@ -357,6 +357,7 @@ export async function publishVlog(input: PublishVlogInput): Promise<PublishVlogR
     const prepared = await prepareVideoForPublish(
       {
         uri: input.sourceUri,
+        mimeType: input.mimeType,
         durationMs: input.durationMs,
         width: input.width,
         height: input.height,

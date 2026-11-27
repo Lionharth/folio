@@ -6,13 +6,14 @@ import '../lib/crypto/polyfill';
 import '../lib/notifications/backgroundTask';
 import '../lib/notifications/handler';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { ActivityIndicator, AppState, StyleSheet, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
-import { Stack } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
+import { router, Stack } from 'expo-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   CormorantGaramond_300Light,
@@ -30,6 +31,7 @@ import {
 import { useFonts } from 'expo-font';
 
 import { useNotificationRouting } from '../hooks/useNotificationRouting';
+import { setPendingCapture } from '../lib/media/pendingCapture';
 import { clearIconBadgeAsync, reconcileNotificationRuntimeAsync } from '../services/notifications';
 import { ThemeProvider, useTheme } from '../theme/ThemeProvider';
 import { useSession } from '../stores/session';
@@ -60,7 +62,6 @@ function RootStack() {
         <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
         <Stack.Screen name="vlog/[id]" options={{ animation: 'fade' }} />
         <Stack.Screen name="create" options={{ animation: 'slide_from_bottom' }} />
-        <Stack.Screen name="capture" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="qr" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="scan" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="circle/[id]" options={{ animation: 'slide_from_right' }} />
@@ -76,6 +77,8 @@ function RootStack() {
 
 export default function RootLayout() {
   const refresh = useSession((state) => state.refresh);
+  const identity = useSession((state) => state.identity);
+  const pendingCaptureChecked = useRef(false);
   const [fontsLoaded, fontError] = useFonts({
     CormorantGaramond_300Light,
     CormorantGaramond_400Regular,
@@ -99,6 +102,25 @@ export default function RootLayout() {
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => undefined);
   }, [ready]);
+
+  useEffect(() => {
+    // Android destroys the activity while the OS camera is open. The result
+    // survives in the picker module, so recover it once the identity is known
+    // and hand the clip back to Create.
+    if (!ready || !identity || pendingCaptureChecked.current) return;
+    pendingCaptureChecked.current = true;
+    ImagePicker.getPendingResultAsync()
+      .then((result) => {
+        if (!result || 'code' in result || result.canceled) return;
+        const asset = result.assets.find(
+          (candidate) => candidate.type === 'video' || candidate.mimeType?.startsWith('video/')
+        );
+        if (!asset) return;
+        setPendingCapture(asset);
+        router.push('/create');
+      })
+      .catch(() => undefined);
+  }, [identity, ready]);
 
   useEffect(() => {
     void reconcileNotificationRuntimeAsync();

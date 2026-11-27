@@ -41,8 +41,14 @@ Blossom servers store opaque ciphertext.
 ## UI and navigation state
 
 - JavaScript tabs contain Updates, Circles, Archive and Profile. The custom tab
-  bar inserts a Create action; `/create`, `/capture` and `/vlog/[id]` are root
-  Stack routes, so none leaves a tab bar underneath a full-screen flow.
+  bar inserts a Create action; `/create` and `/vlog/[id]` are root Stack routes,
+  so none leaves a tab bar underneath a full-screen flow.
+- Create records through the OS capture screen (`expo-image-picker`'s camera
+  intent on Android, `UIImagePickerController` on iOS) instead of an in-app
+  recorder. Clips are recorded at device quality; publishing compresses them to
+  1080p under 25 MB, and non-MP4 sources such as iOS `.mov`/HEVC are re-encoded to
+  H.264 MP4 before encryption. A capture interrupted by Android activity
+  destruction is recovered once at startup from `getPendingResultAsync`.
 - `/qr` and `/scan` are root Stack routes opened from Profile. The QR payload is
   the plain identity npub; scanning only feeds the existing owner-only
   `inviteMember` flow after filtering to circles the viewer owns.
@@ -65,9 +71,9 @@ Blossom servers store opaque ciphertext.
 
 ## State
 
-- **Zustand** for session (active identity), capture hand-off, inbox sync and
-  transient UI state. Session loading always settles and exposes a retryable
-  startup error; the tabs redirect to Welcome when no identity remains.
+- **Zustand** for session (active identity), inbox sync and transient UI state.
+  Session loading always settles and exposes a retryable startup error; the tabs
+  redirect to Welcome when no identity remains.
 - **TanStack Query** for reads from SQLite (circles, vlogs, archive). SQLite is
   the cache; queries invalidate after writes through the shared key helpers.
 - **React context** for the theme, with a persisted `theme.preference` setting

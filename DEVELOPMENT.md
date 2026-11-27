@@ -122,14 +122,14 @@ Reanimated, remove the exclusion and build at the short path.
 | --- | --- | --- |
 | Navigation | `expo-router` | SDK-supported, file-based, Android back handling |
 | Video playback | `expo-video` | SDK 58 module, native controls, local file playback |
-| Camera | `expo-camera` | `CameraView` video recording |
-| Library import | `expo-image-picker` | System picker, video metadata |
+| Camera | `expo-camera` | QR scanning (`CameraView`) |
+| OS capture + library | `expo-image-picker` | System camera capture screen, library import, video metadata |
 | AES-GCM / CSPRNG | `expo-crypto` | Native AES-256-GCM with AAD and nonce control |
 | File streaming | `expo-file-system` (`File`, `FileHandle`) | Chunked reads/writes without loading full files |
 | Local DB | `expo-sqlite` | Structured local data and migrations |
 | Secrets | `expo-secure-store` | Keystore-backed storage for identity and media keys |
 | Nostr | `nostr-tools` 2.26.1 | Pure JS, Hermes-compatible, NIP-17/44/59 helpers |
-| State | `zustand` | Small session/capture stores |
+| State | `zustand` | Small session and sync stores |
 | Server-cache reads | `@tanstack/react-query` | SQLite-backed queries with invalidation |
 | Hashing | native `File.digest('SHA-256')` | Streams large files without JS heap pressure |
 

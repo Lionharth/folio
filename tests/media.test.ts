@@ -9,7 +9,7 @@ import {
   VIDEO_AUDIO_BITRATE,
   VIDEO_TARGET_BYTES,
 } from '../src/constants/media';
-import { exceedsVideoCap, planVideoCompression, targetLongSide } from '../src/lib/media/videoBudget';
+import { exceedsVideoCap, needsMp4Normalization, planVideoCompression, targetLongSide } from '../src/lib/media/videoBudget';
 
 test('targetLongSide caps the short side at 1080 without upscaling', () => {
   assert.equal(targetLongSide(3840, 2160), MAX_VIDEO_LONG_SIDE);
@@ -100,4 +100,14 @@ test('exceedsVideoCap uses the 25 MiB ceiling', () => {
   assert.equal(exceedsVideoCap(MAX_VIDEO_BYTES), false);
   assert.equal(exceedsVideoCap(MAX_VIDEO_BYTES + 1), true);
   assert.equal(targetLongSide(MAX_VIDEO_SHORT_SIDE, MAX_VIDEO_SHORT_SIDE), MAX_VIDEO_SHORT_SIDE);
+});
+
+test('needsMp4Normalization re-encodes non-MP4 sources only', () => {
+  assert.equal(needsMp4Normalization('video/quicktime'), true);
+  assert.equal(needsMp4Normalization('VIDEO/QUICKTIME'), true);
+  assert.equal(needsMp4Normalization('video/mp4'), false);
+  assert.equal(needsMp4Normalization('video/mp4; codecs=avc1'), false);
+  assert.equal(needsMp4Normalization(undefined), false);
+  assert.equal(needsMp4Normalization(null), false);
+  assert.equal(needsMp4Normalization(''), false);
 });
