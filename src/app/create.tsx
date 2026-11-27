@@ -4,6 +4,7 @@ import { Redirect, router, useFocusEffect, useLocalSearchParams, usePreventRemov
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import * as Linking from 'expo-linking';
 import { Image } from 'expo-image';
 import Feather from '@expo/vector-icons/Feather';
@@ -40,6 +41,8 @@ interface SelectedVideo {
   sizeBytes?: number;
   thumbnailUri?: string | null;
 }
+
+const PUBLISH_KEEP_AWAKE_TAG = 'folio-publish';
 
 const STAGE_LABELS: Record<PublishProgress['stage'], string> = {
   preparing: 'Preparing your moment',
@@ -226,6 +229,7 @@ export default function CreateScreen() {
     setPublishing(true);
     setError(null);
     setProgress({ stage: 'preparing' });
+    await activateKeepAwakeAsync(PUBLISH_KEEP_AWAKE_TAG).catch(() => undefined);
     try {
       const secretKey = await readSecretKey(identity.id);
       const result = await publishVlog({
@@ -261,6 +265,7 @@ export default function CreateScreen() {
       setProgress(null);
     } finally {
       setPublishing(false);
+      await deactivateKeepAwake(PUBLISH_KEEP_AWAKE_TAG).catch(() => undefined);
     }
   };
 

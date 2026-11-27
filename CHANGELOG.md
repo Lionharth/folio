@@ -31,6 +31,8 @@
   encryption so Android recipients can play them.
 - Android captures lost when the system destroys the activity during recording
   are recovered at startup and returned to Create with the clip attached.
+- Publishing keeps the screen awake while a moment uploads, so a long encrypted
+  upload is not interrupted by the display sleeping.
 
 ### Removed
 
